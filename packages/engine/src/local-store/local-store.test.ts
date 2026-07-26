@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -25,6 +25,8 @@ import {
   type PreparedPack,
   type SnapshotCodec,
 } from "./index";
+import { LOCAL_STORE_PROJECTION_PATH } from "./artifact-projection";
+import { artifactDigest, canonicalContent, contentDigest } from "./canonicalize";
 import { StoreDatabase } from "./database";
 import { type InstalledPacksManifest, writeManifest } from "./manifest";
 import {
@@ -167,11 +169,24 @@ describe("LocalStore lifecycle", () => {
       if (entry === undefined) throw new Error("expected installed pack manifest entry");
       await stat(join(rootPath, "store.sqlite"));
       await stat(join(rootPath, "packs", entry.storageKey, entry.artifactDigest, "pack.yaml"));
+      await stat(
+        join(
+          rootPath,
+          "packs",
+          entry.storageKey,
+          entry.artifactDigest,
+          ...LOCAL_STORE_PROJECTION_PATH.split("/"),
+        ),
+      );
 
       store.close();
       const restarted = await LocalStore.open({
         root: storageRoot(rootPath),
-        snapshotCodec: testSnapshotCodec(),
+        snapshotCodec: {
+          decode: async () => {
+            throw new Error("Healthy LocalStore.open() must not decode Pack artifacts");
+          },
+        },
       });
       try {
         expect(restarted.state()).toEqual({ installedPacksGeneration: 1, effectiveRevision: 1 });
@@ -362,6 +377,24 @@ describe("LocalStore lifecycle", () => {
       const invalid: PreparedPack = {
         ...valid,
         practiceSourcePaths: new Map([["react.api.layered-design", "../outside.md"]]),
+      };
+
+      await expect(store.install(invalid)).rejects.toBeInstanceOf(InvalidPreparedPackError);
+    });
+  });
+
+  test("reserves the LocalStore projection path for engine-generated content", async () => {
+    await withStore(async (store) => {
+      const valid = preparedPack("react-base", "1.0.0", [practice("react.api.layered-design")]);
+      const invalid: PreparedPack = {
+        ...valid,
+        files: [
+          ...valid.files,
+          {
+            relativePath: LOCAL_STORE_PROJECTION_PATH,
+            bytes: new TextEncoder().encode("{}"),
+          },
+        ],
       };
 
       await expect(store.install(invalid)).rejects.toBeInstanceOf(InvalidPreparedPackError);
@@ -641,6 +674,58 @@ describe("LocalStore recovery and reindex", () => {
     });
   });
 
+  test("requires recovery when SQLite is internally consistent but differs from its projection", async () => {
+    await withStore(async (store, rootPath) => {
+      const practiceId = "react.api.layered-design";
+      await store.install(preparedPack("react-base", "1.0.0", [practice(practiceId)]));
+      store.close();
+
+      const tampered = practice(practiceId, {
+        title: "Tampered guidance",
+        tech_stack: ["go"],
+        applies_when: "building a different system",
+        severity: "critical",
+        body: "Tampered content that remains internally consistent.",
+      });
+      const database = new StoreDatabase(storageRoot(rootPath));
+      database.transaction(() => {
+        database.connection
+          .query<unknown, [string, string]>(
+            "UPDATE practice_sources SET content_digest = ? WHERE practice_id = ?",
+          )
+          .run(contentDigest(tampered), practiceId);
+        database.connection
+          .query<
+            unknown,
+            [string, string, string, string, string, string, string, string, string, string]
+          >(
+            `UPDATE effective_practices
+             SET content_digest = ?, canonical_content = ?, title = ?, stage = ?,
+                 tech_stack_json = ?, applies_when = ?, severity = ?, body = ?,
+                 anti_patterns_json = ?
+             WHERE practice_id = ?`,
+          )
+          .run(
+            contentDigest(tampered),
+            canonicalContent(tampered),
+            tampered.title,
+            tampered.stage,
+            JSON.stringify(tampered.tech_stack),
+            tampered.applies_when,
+            tampered.severity ?? "warn",
+            tampered.body ?? "",
+            JSON.stringify(tampered.anti_patterns ?? []),
+            practiceId,
+          );
+      });
+      database.close();
+
+      await expect(
+        LocalStore.open({ root: storageRoot(rootPath), snapshotCodec: testSnapshotCodec() }),
+      ).rejects.toBeInstanceOf(StoreRecoveryRequiredError);
+    });
+  });
+
   test("reindexes from active artifacts after SQLite corruption and removes historical orphans", async () => {
     await withStore(async (store, rootPath) => {
       await store.install(
@@ -665,6 +750,58 @@ describe("LocalStore recovery and reindex", () => {
       } finally {
         reindexed.close();
       }
+    });
+  });
+
+  test("rejects reindex when an artifact snapshot differs from its sealed projection", async () => {
+    await withStore(async (store, rootPath) => {
+      const practiceId = "react.api.layered-design";
+      const installed = await store.install(
+        preparedPack("react-base", "1.0.0", [practice(practiceId)]),
+      );
+      const manifest = await readManifest(rootPath);
+      const entry = manifest.packs[0];
+      expect(entry).toBeDefined();
+      if (entry === undefined) throw new Error("expected active Pack");
+
+      store.close();
+      const oldArtifactPath = join(
+        rootPath,
+        "packs",
+        installed.pack.storageKey,
+        installed.pack.artifactDigest,
+      );
+      const updatedPractice = practice(practiceId, { body: "Changed after installation." });
+      const updatedPracticeFile = {
+        relativePath: `practices/${practiceId}.md`,
+        bytes: practiceMarkdown(updatedPractice),
+      };
+      const artifactFiles = [
+        {
+          relativePath: "pack.yaml",
+          bytes: await readFile(join(oldArtifactPath, "pack.yaml")),
+        },
+        updatedPracticeFile,
+        {
+          relativePath: LOCAL_STORE_PROJECTION_PATH,
+          bytes: await readFile(join(oldArtifactPath, ...LOCAL_STORE_PROJECTION_PATH.split("/"))),
+        },
+      ];
+      const updatedDigest = artifactDigest(artifactFiles);
+      await writeFile(
+        join(oldArtifactPath, updatedPracticeFile.relativePath),
+        updatedPracticeFile.bytes,
+      );
+      const updatedArtifactPath = join(rootPath, "packs", installed.pack.storageKey, updatedDigest);
+      await rename(oldArtifactPath, updatedArtifactPath);
+      await writeManifest(storageRoot(rootPath), {
+        ...manifest,
+        packs: [{ ...entry, artifactDigest: updatedDigest }],
+      });
+
+      await expect(
+        LocalStore.reindex({ root: storageRoot(rootPath), snapshotCodec: testSnapshotCodec() }),
+      ).rejects.toBeInstanceOf(StoreReindexError);
     });
   });
 

@@ -12,6 +12,11 @@ import {
   storageKey,
 } from "./canonicalize";
 import {
+  createArtifactProjection,
+  LOCAL_STORE_PROJECTION_PATH,
+  projectionSnapshotFile,
+} from "./artifact-projection";
+import {
   discardStagedArtifact,
   promoteArtifact,
   removeArtifact,
@@ -51,6 +56,7 @@ import type {
   LocalStoreState,
   PreparedPack,
   SnapshotCodec,
+  SnapshotFile,
   StorageRoot,
   UninstallResult,
 } from "./types";
@@ -64,6 +70,7 @@ interface CandidatePractice {
 
 interface PackCandidate {
   readonly prepared: PreparedPack;
+  readonly artifactFiles: readonly SnapshotFile[];
   readonly artifactDigest: string;
   readonly storageKey: string;
   readonly validation: ValidationReport;
@@ -262,6 +269,11 @@ export class LocalStore {
     const normalizedFiles = new Map<string, Uint8Array>();
     for (const file of prepared.files) {
       const path = normalizeSnapshotPath(file.relativePath);
+      if (path === LOCAL_STORE_PROJECTION_PATH) {
+        throw new InvalidPreparedPackError(
+          `PreparedPack snapshot must not contain reserved path "${LOCAL_STORE_PROJECTION_PATH}"`,
+        );
+      }
       if (normalizedFiles.has(path)) {
         throw new InvalidPreparedPackError(`Duplicate snapshot path "${path}"`);
       }
@@ -293,10 +305,24 @@ export class LocalStore {
         contentDigest: contentDigest(practice),
       });
     }
+    const projection = createArtifactProjection(
+      prepared.input.pack,
+      practices.map((practice) => ({
+        id: practice.practice.id,
+        canonicalContent: practice.canonicalContent,
+        contentDigest: practice.contentDigest,
+        sourcePath: practice.sourcePath,
+      })),
+    );
+    const artifactFiles = [
+      ...Array.from(normalizedFiles, ([relativePath, bytes]) => ({ relativePath, bytes })),
+      projectionSnapshotFile(projection),
+    ];
 
     return {
       prepared,
-      artifactDigest: artifactDigest(prepared.files),
+      artifactFiles,
+      artifactDigest: artifactDigest(artifactFiles),
       storageKey: storageKey(prepared.input.pack.name),
       validation,
       practices,
@@ -310,7 +336,7 @@ export class LocalStore {
   ): Promise<InstallResult> {
     this.assertNoConflicts(candidate, previous?.name);
     const operationId = crypto.randomUUID();
-    const staged = await stageArtifact(this.root, operationId, candidate.prepared.files);
+    const staged = await stageArtifact(this.root, operationId, candidate.artifactFiles);
     const installedAt = new Date().toISOString();
     const pack: InstalledPack = {
       name: candidate.prepared.input.pack.name,

@@ -2,6 +2,8 @@ import type { Database } from "bun:sqlite";
 
 import type { AntiPattern, Practice } from "@lorelum/format";
 
+import type { ArtifactProjection } from "./artifact-projection";
+import { canonicalContent, canonicalContentDigest } from "./canonicalize";
 import { StoreInvariantError } from "./errors";
 import type { InstalledPacksManifest } from "./manifest";
 import type { InstalledPack, EffectivePractice, LocalStoreState } from "./types";
@@ -142,7 +144,7 @@ export class LocalStoreRepository {
 
   saveEffectivePractice(
     practice: Practice,
-    canonicalContent: string,
+    practiceCanonicalContent: string,
     contentDigest: string,
     effectiveRevision: number,
   ): void {
@@ -170,7 +172,7 @@ export class LocalStoreRepository {
       .run(
         practice.id,
         contentDigest,
-        canonicalContent,
+        practiceCanonicalContent,
         practice.title,
         practice.stage,
         JSON.stringify(practice.tech_stack),
@@ -248,6 +250,110 @@ export class LocalStoreRepository {
     }
   }
 
+  assertMatchesProjections(
+    manifest: InstalledPacksManifest,
+    projections: ReadonlyMap<string, ArtifactProjection>,
+  ): void {
+    this.assertConsistent(manifest);
+    if (projections.size !== manifest.packs.length) {
+      throw new StoreInvariantError("LocalStore projections do not match active Packs");
+    }
+
+    const expectedSources: SourceRow[] = [];
+    const expectedEffectivePractices = new Map<string, ArtifactProjection["practices"][number]>();
+    for (const pack of manifest.packs) {
+      const projection = projections.get(pack.name);
+      if (projection === undefined) {
+        throw new StoreInvariantError(`Active Pack "${pack.name}" has no LocalStore projection`);
+      }
+      if (projection.pack.name !== pack.name || projection.pack.version !== pack.version) {
+        throw new StoreInvariantError(
+          `LocalStore projection does not match active Pack "${pack.name}"`,
+        );
+      }
+
+      for (const practice of projection.practices) {
+        expectedSources.push({
+          pack_name: pack.name,
+          practice_id: practice.id,
+          content_digest: practice.contentDigest,
+          source_path: practice.sourcePath,
+        });
+        const existing = expectedEffectivePractices.get(practice.id);
+        if (
+          existing !== undefined &&
+          (existing.contentDigest !== practice.contentDigest ||
+            existing.canonicalContent !== practice.canonicalContent)
+        ) {
+          throw new StoreInvariantError(
+            `LocalStore projections conflict for Practice "${practice.id}"`,
+          );
+        }
+        expectedEffectivePractices.set(practice.id, practice);
+      }
+    }
+
+    const actualSources = this.database
+      .query<SourceRow, []>(
+        `SELECT pack_name, practice_id, content_digest, source_path
+         FROM practice_sources ORDER BY pack_name, practice_id`,
+      )
+      .all();
+    const sortedExpectedSources = [...expectedSources].sort(compareSourceRows);
+    if (
+      actualSources.length !== sortedExpectedSources.length ||
+      actualSources.some((source, index) => !sameSourceRow(source, sortedExpectedSources[index]))
+    ) {
+      throw new StoreInvariantError(
+        "SQLite Practice sources do not match sealed artifact projections",
+      );
+    }
+
+    const actualEffectivePractices = this.allEffectivePractices();
+    if (
+      actualEffectivePractices.length !== expectedEffectivePractices.size ||
+      actualEffectivePractices.some((effective) => {
+        const expected = expectedEffectivePractices.get(effective.id);
+        if (
+          expected === undefined ||
+          expected.contentDigest !== effective.contentDigest ||
+          expected.canonicalContent !== effective.canonicalContent
+        ) {
+          return true;
+        }
+        this.assertEffectivePracticeMaterialized(effective);
+        return false;
+      })
+    ) {
+      throw new StoreInvariantError(
+        "SQLite Effective Practices do not match sealed artifact projections",
+      );
+    }
+  }
+
+  private assertEffectivePracticeMaterialized(effective: EffectivePractice): void {
+    const materializedCanonicalContent = canonicalContent({
+      id: effective.id,
+      title: effective.title,
+      stage: effective.stage,
+      tech_stack: [...effective.techStack],
+      applies_when: effective.appliesWhen,
+      severity: effective.severity,
+      body: effective.body,
+      anti_patterns: [...effective.antiPatterns],
+    });
+    if (materializedCanonicalContent !== effective.canonicalContent) {
+      throw new StoreInvariantError(
+        `SQLite Effective Practice "${effective.id}" fields do not match canonical content`,
+      );
+    }
+    if (canonicalContentDigest(effective.canonicalContent) !== effective.contentDigest) {
+      throw new StoreInvariantError(
+        `SQLite Effective Practice "${effective.id}" canonical content does not match its digest`,
+      );
+    }
+  }
+
   private toEffectivePractice(row: EffectivePracticeRow): EffectivePractice {
     const sourcePackNames = this.sourcesForPractice(row.practice_id).map(
       (source) => source.pack_name,
@@ -308,4 +414,18 @@ function toInstalledPack(row: ActivePackRow): InstalledPack {
     storageKey: row.storage_key,
     installedAt: row.installed_at,
   };
+}
+
+function compareSourceRows(left: SourceRow, right: SourceRow): number {
+  return sourceRowKey(left).localeCompare(sourceRowKey(right));
+}
+
+function sameSourceRow(left: SourceRow, right: SourceRow | undefined): boolean {
+  return right !== undefined && sourceRowKey(left) === sourceRowKey(right);
+}
+
+function sourceRowKey(source: SourceRow): string {
+  return [source.pack_name, source.practice_id, source.content_digest, source.source_path].join(
+    "\0",
+  );
 }

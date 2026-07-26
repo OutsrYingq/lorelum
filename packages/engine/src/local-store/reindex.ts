@@ -3,6 +3,11 @@ import { rename, rm } from "node:fs/promises";
 import { validatePack, type Practice } from "@lorelum/format";
 
 import { artifactPath, verifyArtifact } from "./artifact-store";
+import {
+  assertProjectionMatchesPreparedPack,
+  readArtifactProjection,
+  type ArtifactProjection,
+} from "./artifact-projection";
 import { canonicalContent, contentDigest, normalizeSnapshotPath, storageKey } from "./canonicalize";
 import { databasePath, StoreDatabase } from "./database";
 import { StoreReindexError } from "./errors";
@@ -37,7 +42,7 @@ export async function reindexLocalStore(
   const packs = await Promise.all(
     manifest.packs.map(async (pack) => {
       const files = await verifyArtifact(root, pack.storageKey, pack.artifactDigest);
-      return decodeActivePack(root, pack, files, snapshotCodec);
+      return decodeActivePack(root, pack, files, readArtifactProjection(files), snapshotCodec);
     }),
   );
   assertNoConflicts(packs);
@@ -48,6 +53,7 @@ async function decodeActivePack(
   root: StorageRoot,
   pack: InstalledPack,
   files: readonly SnapshotFile[],
+  projection: ArtifactProjection,
   snapshotCodec: SnapshotCodec,
 ): Promise<DecodedPack> {
   if (pack.storageKey !== storageKey(pack.name)) {
@@ -77,6 +83,14 @@ async function decodeActivePack(
   if (decoded.practiceSourcePaths.size !== decoded.input.practices.length) {
     throw new StoreReindexError(
       `Active artifact for Pack "${pack.name}" has incomplete Practice source paths`,
+    );
+  }
+  try {
+    assertProjectionMatchesPreparedPack(projection, decoded);
+  } catch (error: unknown) {
+    throw new StoreReindexError(
+      `Active artifact for Pack "${pack.name}" does not match its LocalStore projection: ${errorMessage(error)}`,
+      error,
     );
   }
 

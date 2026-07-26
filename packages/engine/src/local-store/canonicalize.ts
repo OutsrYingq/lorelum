@@ -94,5 +94,9 @@ export function canonicalContent(practice: Practice): string {
 }
 
 export function contentDigest(practice: Practice): string {
-  return hashParts([new TextEncoder().encode(canonicalContent(practice))]);
+  return canonicalContentDigest(canonicalContent(practice));
+}
+
+export function canonicalContentDigest(content: string): string {
+  return hashParts([new TextEncoder().encode(content)]);
 }

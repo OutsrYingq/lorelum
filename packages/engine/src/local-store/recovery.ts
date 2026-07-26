@@ -1,4 +1,5 @@
 import { cleanupUnreferencedArtifacts, verifyArtifact } from "./artifact-store";
+import { readArtifactProjection } from "./artifact-projection";
 import { storageKey } from "./canonicalize";
 import { StoreRecoveryRequiredError } from "./errors";
 import type { InstalledPacksManifest } from "./manifest";
@@ -39,17 +40,18 @@ export async function verifyOpenState(
   const activeArtifacts = new Set(
     manifest.packs.map((pack) => `${pack.storageKey}/${pack.artifactDigest}`),
   );
-  await Promise.all(
+  const projections = await Promise.all(
     manifest.packs.map(async (pack) => {
       if (pack.storageKey !== storageKey(pack.name)) {
         throw new StoreRecoveryRequiredError(
           `Active Pack "${pack.name}" has an invalid storage key in the manifest`,
         );
       }
-      await verifyArtifact(root, pack.storageKey, pack.artifactDigest);
+      const files = await verifyArtifact(root, pack.storageKey, pack.artifactDigest);
+      return [pack.name, readArtifactProjection(files)] as const;
     }),
   );
-  repository.assertConsistent(manifest);
+  repository.assertMatchesProjections(manifest, new Map(projections));
   await cleanupUnreferencedArtifacts(root, activeArtifacts);
 }
 

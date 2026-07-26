@@ -47,7 +47,8 @@ The durable recovery sources are:
 - `installed-packs.json`, the active-Pack manifest with a monotonically
   increasing `generation`;
 - immutable unpacked Pack artifacts under
-  `packs/<storage-key>/<artifact-digest>/`; and
+  `packs/<storage-key>/<artifact-digest>/`, including an engine-owned,
+  artifact-digest-protected LocalStore projection; and
 - an operation journal used to recover interrupted mutations.
 
 SQLite is derived state rather than the sole source of truth. It stores the
@@ -57,6 +58,16 @@ The manifest and artifact layout must be versioned. A damaged or missing
 SQLite database is rebuilt from the active manifest and its referenced local
 artifacts. Historical artifacts that are no longer active are not scanned to
 restore an uninstalled Pack.
+
+The projection is generated from validated candidate data before the artifact
+digest is calculated. It records Pack name and version plus each Practice's
+id, canonical content, content digest, and normalized source path. Cold start
+does not reparse Pack or Practice files: it verifies the artifact digest, reads
+the projection, and compares its expected Pack, source, and Effective Practice
+state with SQLite. SQLite Effective Practice fields must canonicalize back to
+the stored canonical content and digest. A mismatch fails closed and requires
+reindex. Reindex reparses the active artifacts and verifies that the decoded
+content agrees with the sealed projection before rebuilding SQLite.
 
 ### Installation, merge, and removal semantics
 
@@ -89,9 +100,10 @@ transactions, and an `effectiveRevision` representing the resulting Effective
 Practice set.
 
 On startup and before serving reads, LocalStore recovers an interrupted
-operation using the journal and reconciles derived SQLite state from the active
-manifest and artifacts when necessary. Reindex rebuilds only from the current
-active manifest and referenced artifacts.
+operation using the journal, then verifies derived SQLite state against the
+active manifest and sealed artifact projections without reparsing Practices.
+Reindex rebuilds only from the current active manifest and referenced artifacts
+after validating the decoded artifacts against their projections.
 
 ### Scope boundary
 
@@ -107,6 +119,8 @@ vector-index decision may consume LocalStore's effective Practices and
 
 - Local installations are deterministic and recoverable without depending on a
   derived database.
+- Cold start can detect a mutually consistent but altered SQLite projection
+  without re-parsing Pack or Practice files.
 - Cross-Pack duplicate content is stored and retrieved as one Effective
   Practice while preserving every contributing source for correct uninstall.
 - Conflicting guidance cannot silently change retrieval based on installation
@@ -116,8 +130,8 @@ vector-index decision may consume LocalStore's effective Practices and
 
 **Negative / accepted risk:**
 
-- Immutable artifacts duplicate Pack content on disk, and journals plus
-  recovery add operational complexity.
+- Immutable artifacts duplicate Pack content on disk, and the sealed
+  projection plus journals add operational complexity.
 - v1 gives all projects for one user the same installed-Pack view. Project
   isolation requires a separate future decision.
 - Pack-to-Pack dependencies remain unsupported in v1, consistent with ADR 0003.
@@ -126,8 +140,9 @@ vector-index decision may consume LocalStore's effective Practices and
 
 - v1 introduces the first LocalStore layout, so there is no existing persisted
   layout to migrate.
-- The manifest, artifact metadata, SQLite schema, and journal formats require
-  explicit versioning and forward migration handling before they are persisted.
+- The manifest, artifact metadata and projection format, SQLite schema, and
+  journal formats require explicit versioning and forward migration handling
+  before they are persisted.
 - A future project-local store, alternate conflict semantics, or change to the
   recovery source requires a new ADR rather than an incompatible reinterpretation
   of this layout.
@@ -144,4 +159,4 @@ vector-index decision may consume LocalStore's effective Practices and
 
 - Finalized LocalStore design: https://jcnv104g7m1c.feishu.cn/wiki/UgRGwhGsii1a05kzV9Ics30DnNb
 - ADR 0003: Practice & Pack format and validation semantics.
-- Issue: https://github.com/lorelum/lorelum/issues/15
+- Issue: https://github.com/lorelum/lorelum/issues/18
