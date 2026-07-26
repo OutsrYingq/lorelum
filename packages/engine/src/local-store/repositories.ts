@@ -2,6 +2,8 @@ import type { Database } from "bun:sqlite";
 
 import type { AntiPattern, Practice } from "@lorelum/format";
 
+import { StoreInvariantError } from "./errors";
+import type { InstalledPacksManifest } from "./manifest";
 import type { InstalledPack, EffectivePractice, LocalStoreState } from "./types";
 
 interface SourceRow {
@@ -191,6 +193,61 @@ export class LocalStoreRepository {
     this.setMetadata("effective_revision", String(state.effectiveRevision));
   }
 
+  assertConsistent(manifest: InstalledPacksManifest): void {
+    const manifestPacks = manifest.packs;
+    const databasePacks = this.allInstalledPacks();
+    if (
+      manifestPacks.length !== databasePacks.length ||
+      manifestPacks.some((pack, index) => !sameInstalledPack(pack, databasePacks[index]))
+    ) {
+      throw new StoreInvariantError("SQLite active Packs do not match the installed-pack manifest");
+    }
+
+    const sources = this.database
+      .query<SourceRow, []>(
+        `SELECT pack_name, practice_id, content_digest, source_path
+         FROM practice_sources ORDER BY practice_id, pack_name`,
+      )
+      .all();
+    const manifestPackNames = new Set(manifestPacks.map((pack) => pack.name));
+    const sourcesByPractice = new Map<string, SourceRow[]>();
+    for (const source of sources) {
+      if (!manifestPackNames.has(source.pack_name)) {
+        throw new StoreInvariantError(
+          `SQLite source references inactive Pack "${source.pack_name}"`,
+        );
+      }
+      const practiceSources = sourcesByPractice.get(source.practice_id) ?? [];
+      practiceSources.push(source);
+      sourcesByPractice.set(source.practice_id, practiceSources);
+    }
+
+    const effectivePractices = this.allEffectivePractices();
+    const effectiveByPractice = new Map(
+      effectivePractices.map((practice) => [practice.id, practice]),
+    );
+    for (const [practiceId, practiceSources] of sourcesByPractice) {
+      const effective = effectiveByPractice.get(practiceId);
+      if (effective === undefined) {
+        throw new StoreInvariantError(
+          `SQLite sources for Practice "${practiceId}" have no effective Practice`,
+        );
+      }
+      if (practiceSources.some((source) => source.content_digest !== effective.contentDigest)) {
+        throw new StoreInvariantError(
+          `SQLite sources for Practice "${practiceId}" disagree with effective content`,
+        );
+      }
+    }
+    for (const effective of effectivePractices) {
+      if (!sourcesByPractice.has(effective.id)) {
+        throw new StoreInvariantError(
+          `SQLite effective Practice "${effective.id}" has no active source`,
+        );
+      }
+    }
+  }
+
   private toEffectivePractice(row: EffectivePracticeRow): EffectivePractice {
     const sourcePackNames = this.sourcesForPractice(row.practice_id).map(
       (source) => source.pack_name,
@@ -215,7 +272,11 @@ export class LocalStoreRepository {
     const row = this.database
       .query<{ value: string }, [string]>("SELECT value FROM store_metadata WHERE key = ?")
       .get(key);
-    return Number(row?.value ?? "0");
+    const value = Number(row?.value ?? "0");
+    if (!Number.isSafeInteger(value) || value < 0) {
+      throw new StoreInvariantError(`SQLite metadata "${key}" is not a non-negative integer`);
+    }
+    return value;
   }
 
   private setMetadata(key: string, value: string): void {
@@ -226,6 +287,17 @@ export class LocalStoreRepository {
       )
       .run(key, value);
   }
+}
+
+function sameInstalledPack(left: InstalledPack, right: InstalledPack | undefined): boolean {
+  return (
+    right !== undefined &&
+    left.name === right.name &&
+    left.version === right.version &&
+    left.artifactDigest === right.artifactDigest &&
+    left.storageKey === right.storageKey &&
+    left.installedAt === right.installedAt
+  );
 }
 
 function toInstalledPack(row: ActivePackRow): InstalledPack {

@@ -33,7 +33,7 @@ function isInstalledPack(value: unknown): value is InstalledPack {
   );
 }
 
-function parseManifest(value: unknown): InstalledPacksManifest {
+export function parseInstalledPacksManifest(value: unknown): InstalledPacksManifest {
   if (value === null || typeof value !== "object") {
     throw new StoreInvariantError("Installed-pack manifest is not an object");
   }
@@ -69,7 +69,7 @@ function parseManifest(value: unknown): InstalledPacksManifest {
 export async function loadManifest(root: StorageRoot): Promise<InstalledPacksManifest> {
   try {
     const content = await readFile(manifestPath(root), "utf8");
-    return parseManifest(JSON.parse(content) as unknown);
+    return parseInstalledPacksManifest(JSON.parse(content) as unknown);
   } catch (error: unknown) {
     if (isNodeError(error, "ENOENT")) return emptyManifest();
     if (error instanceof StoreInvariantError) throw error;

@@ -25,6 +25,8 @@ import {
   PackValidationError,
   PracticeConflictError,
   StoreInvariantError,
+  StoreReindexError,
+  StoreRecoveryRequiredError,
 } from "./errors";
 import {
   emptyManifest,
@@ -33,6 +35,13 @@ import {
   writeManifest,
 } from "./manifest";
 import { withMutationLock } from "./mutation-lock";
+import {
+  createOperationJournal,
+  removeOperationJournal,
+  writeOperationJournal,
+} from "./operation-journal";
+import { recoverInterruptedMutation, verifyOpenState } from "./recovery";
+import { reindexLocalStore } from "./reindex";
 import { LocalStoreRepository } from "./repositories";
 import type {
   EffectivePractice,
@@ -71,6 +80,7 @@ export function defaultStorageRoot(): StorageRoot {
 
 export class LocalStore {
   private readonly repository: LocalStoreRepository;
+  private unavailable: StoreRecoveryRequiredError | null = null;
 
   private constructor(
     readonly root: StorageRoot,
@@ -84,19 +94,52 @@ export class LocalStore {
   static async open(options: LocalStoreOpenOptions): Promise<LocalStore> {
     const root = options.root ?? defaultStorageRoot();
     await mkdir(root.path, { recursive: true });
-    const manifest = await loadManifest(root);
-    const database = new StoreDatabase(root);
-    const repository = new LocalStoreRepository(database.connection);
-    const state = repository.state();
+    return withMutationLock(root, async () => {
+      let database: StoreDatabase | undefined;
+      try {
+        let manifest = await loadManifest(root);
+        database = new StoreDatabase(root);
+        database.assertHealthy();
+        const repository = new LocalStoreRepository(database.connection);
+        manifest = await recoverInterruptedMutation(
+          root,
+          manifest,
+          repository.state().installedPacksGeneration,
+        );
 
-    if (state.installedPacksGeneration !== manifest.generation) {
-      database.close();
-      throw new StoreInvariantError(
-        `SQLite generation ${state.installedPacksGeneration} does not match manifest generation ${manifest.generation}`,
-      );
-    }
+        const state = repository.state();
+        if (state.installedPacksGeneration !== manifest.generation) {
+          throw new StoreRecoveryRequiredError(
+            `SQLite generation ${state.installedPacksGeneration} does not match manifest generation ${manifest.generation}`,
+          );
+        }
+        await verifyOpenState(root, repository, manifest);
+        return new LocalStore(root, database, manifest, options.snapshotCodec);
+      } catch (error: unknown) {
+        database?.close();
+        if (error instanceof StoreRecoveryRequiredError) throw error;
+        throw new StoreRecoveryRequiredError(
+          `LocalStore requires recovery: ${errorMessage(error)}`,
+          error,
+        );
+      }
+    });
+  }
 
-    return new LocalStore(root, database, manifest, options.snapshotCodec);
+  static async reindex(options: LocalStoreOpenOptions): Promise<LocalStore> {
+    const root = options.root ?? defaultStorageRoot();
+    await mkdir(root.path, { recursive: true });
+    await withMutationLock(root, async () => {
+      let manifest: InstalledPacksManifest;
+      try {
+        manifest = await loadManifest(root);
+        await reindexLocalStore(root, manifest, options.snapshotCodec);
+      } catch (error: unknown) {
+        if (error instanceof StoreReindexError) throw error;
+        throw new StoreReindexError(`LocalStore reindex failed: ${errorMessage(error)}`, error);
+      }
+    });
+    return LocalStore.open({ ...options, root });
   }
 
   close(): void {
@@ -104,22 +147,27 @@ export class LocalStore {
   }
 
   state(): LocalStoreState {
+    this.assertAvailable();
     return this.repository.state();
   }
 
   installedPacks(): readonly InstalledPack[] {
+    this.assertAvailable();
     return this.repository.allInstalledPacks();
   }
 
   effectivePractices(): readonly EffectivePractice[] {
+    this.assertAvailable();
     return this.repository.allEffectivePractices();
   }
 
   effectivePractice(practiceId: string): EffectivePractice | null {
+    this.assertAvailable();
     return this.repository.effectivePractice(practiceId);
   }
 
   async install(prepared: PreparedPack): Promise<InstallResult> {
+    this.assertAvailable();
     const candidate = this.prepareCandidate(prepared);
     return withMutationLock(this.root, async () => {
       await this.reloadManifest();
@@ -140,6 +188,7 @@ export class LocalStore {
   }
 
   async upgrade(prepared: PreparedPack): Promise<InstallResult> {
+    this.assertAvailable();
     const candidate = this.prepareCandidate(prepared);
     return withMutationLock(this.root, async () => {
       await this.reloadManifest();
@@ -160,6 +209,7 @@ export class LocalStore {
   }
 
   async uninstall(packName: string): Promise<UninstallResult> {
+    this.assertAvailable();
     return withMutationLock(this.root, async () => {
       await this.reloadManifest();
       const existing = this.manifest.packs.find((pack) => pack.name === packName);
@@ -170,24 +220,36 @@ export class LocalStore {
       const nextManifest = this.nextManifest(
         this.manifest.packs.filter((pack) => pack.name !== packName),
       );
-
-      await writeManifest(this.root, nextManifest);
-      const nextRevision = this.database.transaction(() => {
-        const currentState = this.repository.state();
-        this.repository.deletePack(packName);
-        const effectiveChanged = this.reconcileEffectivePractices(affectedPracticeIds, new Map());
-        const state = {
-          installedPacksGeneration: nextManifest.generation,
-          effectiveRevision: currentState.effectiveRevision + (effectiveChanged ? 1 : 0),
-        };
-        if (effectiveChanged) {
-          this.rewriteChangedEffectiveRevisions(affectedPracticeIds, state.effectiveRevision);
-        }
-        this.repository.setState(state);
-        return state.effectiveRevision;
-      });
-
-      this.manifest = nextManifest;
+      const operationId = crypto.randomUUID();
+      let journalWritten = false;
+      let nextRevision: number;
+      try {
+        await writeOperationJournal(
+          this.root,
+          createOperationJournal(operationId, "uninstall", this.manifest, nextManifest),
+        );
+        journalWritten = true;
+        await writeManifest(this.root, nextManifest);
+        nextRevision = this.database.transaction(() => {
+          const currentState = this.repository.state();
+          this.repository.deletePack(packName);
+          const effectiveChanged = this.reconcileEffectivePractices(affectedPracticeIds, new Map());
+          const state = {
+            installedPacksGeneration: nextManifest.generation,
+            effectiveRevision: currentState.effectiveRevision + (effectiveChanged ? 1 : 0),
+          };
+          if (effectiveChanged) {
+            this.rewriteChangedEffectiveRevisions(affectedPracticeIds, state.effectiveRevision);
+          }
+          this.repository.setState(state);
+          return state.effectiveRevision;
+        });
+        this.manifest = nextManifest;
+        await removeOperationJournal(this.root, operationId);
+      } catch (error: unknown) {
+        if (journalWritten) this.markUnavailable(error);
+        throw error;
+      }
       await removeArtifact(this.root, existing.storageKey, existing.artifactDigest);
       return { packName, effectiveRevision: nextRevision };
     });
@@ -257,17 +319,29 @@ export class LocalStore {
       storageKey: candidate.storageKey,
       installedAt,
     };
+    const nextManifest = this.nextManifest([
+      ...this.manifest.packs.filter((entry) => entry.name !== pack.name),
+      pack,
+    ]);
+    let journalWritten = false;
+    let nextRevision: number;
 
     try {
       await this.assertSnapshotMatchesCandidate(candidate, staged.directory);
       await promoteArtifact(this.root, staged, pack.storageKey, pack.artifactDigest);
-      const nextManifest = this.nextManifest([
-        ...this.manifest.packs.filter((entry) => entry.name !== pack.name),
-        pack,
-      ]);
+      await writeOperationJournal(
+        this.root,
+        createOperationJournal(
+          operationId,
+          kind === "installed" ? "install" : "upgrade",
+          this.manifest,
+          nextManifest,
+        ),
+      );
+      journalWritten = true;
       await writeManifest(this.root, nextManifest);
 
-      const nextRevision = this.database.transaction(() => {
+      nextRevision = this.database.transaction(() => {
         const oldSources = this.repository.sourcesForPack(pack.name);
         const affectedPracticeIds = new Set([
           ...oldSources.map((source) => source.practice_id),
@@ -307,21 +381,24 @@ export class LocalStore {
       });
 
       this.manifest = nextManifest;
-      if (previous !== undefined) {
-        await removeArtifact(this.root, previous.storageKey, previous.artifactDigest);
-      }
-      return { kind, pack, effectiveRevision: nextRevision, validation: candidate.validation };
+      await removeOperationJournal(this.root, operationId);
     } catch (error: unknown) {
+      if (journalWritten) this.markUnavailable(error);
       await discardStagedArtifact(this.root, staged);
       throw error;
     }
+    if (previous !== undefined) {
+      await removeArtifact(this.root, previous.storageKey, previous.artifactDigest);
+    }
+    return { kind, pack, effectiveRevision: nextRevision, validation: candidate.validation };
   }
 
   private async reloadManifest(): Promise<void> {
+    this.assertAvailable();
     const manifest = await loadManifest(this.root);
     const state = this.repository.state();
     if (state.installedPacksGeneration !== manifest.generation) {
-      throw new StoreInvariantError(
+      throw new StoreRecoveryRequiredError(
         `SQLite generation ${state.installedPacksGeneration} does not match manifest generation ${manifest.generation}`,
       );
     }
@@ -460,6 +537,20 @@ export class LocalStore {
       packs: [...packs].sort((left, right) => left.name.localeCompare(right.name)),
     };
   }
+
+  private assertAvailable(): void {
+    if (this.unavailable !== null) throw this.unavailable;
+  }
+
+  private markUnavailable(error: unknown): void {
+    this.unavailable =
+      error instanceof StoreRecoveryRequiredError
+        ? error
+        : new StoreRecoveryRequiredError(
+            `LocalStore mutation did not complete cleanly: ${errorMessage(error)}`,
+            error,
+          );
+  }
 }
 
 function sameDecisions(left: unknown, right: unknown): boolean {
@@ -475,4 +566,8 @@ function canonicalJson(value: unknown): string {
     .sort()
     .map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`)
     .join(",")}}`;
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

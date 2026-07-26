@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtemp, readFile, readdir, rm, stat } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -18,11 +18,21 @@ import {
   PackUpgradeRequiredError,
   PackValidationError,
   PracticeConflictError,
+  StoreReindexError,
+  StoreRecoveryRequiredError,
   defaultStorageRoot,
   storageRoot,
   type PreparedPack,
   type SnapshotCodec,
 } from "./index";
+import { StoreDatabase } from "./database";
+import { type InstalledPacksManifest, writeManifest } from "./manifest";
+import {
+  createOperationJournal,
+  operationJournalPath,
+  writeOperationJournal,
+} from "./operation-journal";
+import { LocalStoreRepository } from "./repositories";
 
 function practice(id: string, overrides: Partial<Practice> = {}): Practice {
   return {
@@ -111,6 +121,20 @@ async function withStore(
     store.close();
     await rm(rootPath, { recursive: true, force: true });
   }
+}
+
+async function readManifest(rootPath: string): Promise<InstalledPacksManifest> {
+  return JSON.parse(
+    await readFile(join(rootPath, "installed-packs.json"), "utf8"),
+  ) as InstalledPacksManifest;
+}
+
+function setDatabaseGeneration(rootPath: string, generation: number): void {
+  const database = new StoreDatabase(storageRoot(rootPath));
+  const repository = new LocalStoreRepository(database.connection);
+  const state = repository.state();
+  repository.setState({ ...state, installedPacksGeneration: generation });
+  database.close();
 }
 
 describe("LocalStore lifecycle", () => {
@@ -406,5 +430,318 @@ describe("LocalStore lifecycle", () => {
       second.close();
       await rm(rootPath, { recursive: true, force: true });
     }
+  });
+});
+
+describe("LocalStore recovery and reindex", () => {
+  test("restores the old manifest when an interrupted mutation leaves SQLite at the old generation", async () => {
+    await withStore(async (store, rootPath) => {
+      await store.install(
+        preparedPack("react-base", "1.0.0", [practice("react.api.layered-design")]),
+      );
+      const oldManifest = await readManifest(rootPath);
+      const targetManifest: InstalledPacksManifest = {
+        ...oldManifest,
+        generation: oldManifest.generation + 1,
+        packs: [
+          ...oldManifest.packs,
+          {
+            name: "react-target",
+            version: "1.0.0",
+            storageKey: "react-target",
+            artifactDigest: "0".repeat(64),
+            installedAt: "2026-07-26T00:00:00.000Z",
+          },
+        ],
+      };
+      const operationId = "restore-old";
+
+      await writeOperationJournal(
+        storageRoot(rootPath),
+        createOperationJournal(operationId, "upgrade", oldManifest, targetManifest),
+      );
+      await writeManifest(storageRoot(rootPath), targetManifest);
+      store.close();
+
+      const recovered = await LocalStore.open({
+        root: storageRoot(rootPath),
+        snapshotCodec: testSnapshotCodec(),
+      });
+      try {
+        expect(recovered.state().installedPacksGeneration).toBe(oldManifest.generation);
+        expect(await readManifest(rootPath)).toEqual(oldManifest);
+        await expect(
+          stat(operationJournalPath(storageRoot(rootPath), operationId)),
+        ).rejects.toMatchObject({
+          code: "ENOENT",
+        });
+      } finally {
+        recovered.close();
+      }
+    });
+  });
+
+  test("keeps the target manifest when an interrupted mutation leaves SQLite at the target generation", async () => {
+    await withStore(async (store, rootPath) => {
+      await store.install(
+        preparedPack("react-base", "1.0.0", [practice("react.api.layered-design")]),
+      );
+      const oldManifest = await readManifest(rootPath);
+      const targetManifest: InstalledPacksManifest = {
+        ...oldManifest,
+        generation: oldManifest.generation + 1,
+        packs: [],
+      };
+      const operationId = "keep-target";
+
+      store.close();
+      const database = new StoreDatabase(storageRoot(rootPath));
+      const repository = new LocalStoreRepository(database.connection);
+      database.transaction(() => {
+        repository.deletePack("react-base");
+        repository.deleteEffectivePractice("react.api.layered-design");
+        const state = repository.state();
+        repository.setState({
+          ...state,
+          installedPacksGeneration: targetManifest.generation,
+        });
+      });
+      database.close();
+      await writeOperationJournal(
+        storageRoot(rootPath),
+        createOperationJournal(operationId, "upgrade", oldManifest, targetManifest),
+      );
+
+      const recovered = await LocalStore.open({
+        root: storageRoot(rootPath),
+        snapshotCodec: testSnapshotCodec(),
+      });
+      try {
+        expect(recovered.state().installedPacksGeneration).toBe(targetManifest.generation);
+        expect(await readManifest(rootPath)).toEqual(targetManifest);
+        expect(recovered.installedPacks()).toEqual([]);
+      } finally {
+        recovered.close();
+      }
+    });
+  });
+
+  test("fails closed for an ambiguous interrupted mutation generation", async () => {
+    await withStore(async (store, rootPath) => {
+      await store.install(
+        preparedPack("react-base", "1.0.0", [practice("react.api.layered-design")]),
+      );
+      const oldManifest = await readManifest(rootPath);
+      const targetManifest = { ...oldManifest, generation: oldManifest.generation + 1 };
+      store.close();
+      setDatabaseGeneration(rootPath, targetManifest.generation + 1);
+      await writeOperationJournal(
+        storageRoot(rootPath),
+        createOperationJournal("ambiguous", "upgrade", oldManifest, targetManifest),
+      );
+
+      await expect(
+        LocalStore.open({ root: storageRoot(rootPath), snapshotCodec: testSnapshotCodec() }),
+      ).rejects.toBeInstanceOf(StoreRecoveryRequiredError);
+    });
+  });
+
+  test("requires recovery for missing, corrupt, or schema-incompatible SQLite state", async () => {
+    await withStore(async (store, rootPath) => {
+      await store.install(
+        preparedPack("react-base", "1.0.0", [practice("react.api.layered-design")]),
+      );
+      store.close();
+      await rm(join(rootPath, "store.sqlite"));
+      await expect(
+        LocalStore.open({ root: storageRoot(rootPath), snapshotCodec: testSnapshotCodec() }),
+      ).rejects.toBeInstanceOf(StoreRecoveryRequiredError);
+
+      await writeFile(join(rootPath, "store.sqlite"), "not a SQLite database", "utf8");
+      await expect(
+        LocalStore.open({ root: storageRoot(rootPath), snapshotCodec: testSnapshotCodec() }),
+      ).rejects.toBeInstanceOf(StoreRecoveryRequiredError);
+
+      await rm(join(rootPath, "store.sqlite"));
+      const reindexed = await LocalStore.reindex({
+        root: storageRoot(rootPath),
+        snapshotCodec: testSnapshotCodec(),
+      });
+      reindexed.close();
+
+      const database = new StoreDatabase(storageRoot(rootPath));
+      database.connection
+        .query<unknown, [string]>(
+          "UPDATE store_metadata SET value = ? WHERE key = 'schema_version'",
+        )
+        .run("999");
+      database.close();
+      await expect(
+        LocalStore.open({ root: storageRoot(rootPath), snapshotCodec: testSnapshotCodec() }),
+      ).rejects.toBeInstanceOf(StoreRecoveryRequiredError);
+    });
+  });
+
+  test("requires recovery for missing or digest-mismatched active artifacts", async () => {
+    await withStore(async (store, rootPath) => {
+      const installed = await store.install(
+        preparedPack("react-base", "1.0.0", [practice("react.api.layered-design")]),
+      );
+      const artifact = join(
+        rootPath,
+        "packs",
+        installed.pack.storageKey,
+        installed.pack.artifactDigest,
+      );
+      store.close();
+      await rm(artifact, { recursive: true });
+      await expect(
+        LocalStore.open({ root: storageRoot(rootPath), snapshotCodec: testSnapshotCodec() }),
+      ).rejects.toBeInstanceOf(StoreRecoveryRequiredError);
+    });
+
+    await withStore(async (store, rootPath) => {
+      const installed = await store.install(
+        preparedPack("react-base", "1.0.0", [practice("react.api.layered-design")]),
+      );
+      store.close();
+      await writeFile(
+        join(
+          rootPath,
+          "packs",
+          installed.pack.storageKey,
+          installed.pack.artifactDigest,
+          "pack.yaml",
+        ),
+        '{"name":"tampered","version":"1.0.0"}',
+        "utf8",
+      );
+      await expect(
+        LocalStore.open({ root: storageRoot(rootPath), snapshotCodec: testSnapshotCodec() }),
+      ).rejects.toBeInstanceOf(StoreRecoveryRequiredError);
+    });
+  });
+
+  test("requires recovery when SQLite Practice sources and effective Practices diverge", async () => {
+    await withStore(async (store, rootPath) => {
+      await store.install(
+        preparedPack("react-base", "1.0.0", [practice("react.api.layered-design")]),
+      );
+      store.close();
+
+      const database = new StoreDatabase(storageRoot(rootPath));
+      database.connection
+        .query<unknown, [string]>("DELETE FROM effective_practices WHERE practice_id = ?")
+        .run("react.api.layered-design");
+      database.close();
+
+      await expect(
+        LocalStore.open({ root: storageRoot(rootPath), snapshotCodec: testSnapshotCodec() }),
+      ).rejects.toBeInstanceOf(StoreRecoveryRequiredError);
+    });
+  });
+
+  test("reindexes from active artifacts after SQLite corruption and removes historical orphans", async () => {
+    await withStore(async (store, rootPath) => {
+      await store.install(
+        preparedPack("react-base", "1.0.0", [practice("react.api.layered-design")]),
+      );
+      store.close();
+      await writeFile(join(rootPath, "store.sqlite"), "not a SQLite database", "utf8");
+
+      const orphan = join(rootPath, "packs", "historic", "0".repeat(64));
+      await mkdir(orphan, { recursive: true });
+      await writeFile(join(orphan, "pack.yaml"), '{"name":"historic","version":"0.1.0"}', "utf8");
+
+      const reindexed = await LocalStore.reindex({
+        root: storageRoot(rootPath),
+        snapshotCodec: testSnapshotCodec(),
+      });
+      try {
+        expect(reindexed.state()).toEqual({ installedPacksGeneration: 1, effectiveRevision: 2 });
+        expect(reindexed.effectivePractice("react.api.layered-design")).not.toBeNull();
+        expect(reindexed.effectivePractice("historic.legacy")).toBeNull();
+        await expect(stat(orphan)).rejects.toMatchObject({ code: "ENOENT" });
+      } finally {
+        reindexed.close();
+      }
+    });
+  });
+
+  test("keeps already-open LocalStore instances on the rebuilt SQLite state", async () => {
+    const rootPath = await mkdtemp(join(tmpdir(), "lorelum-local-store-"));
+    const root = storageRoot(rootPath);
+    const first = await LocalStore.open({ root, snapshotCodec: testSnapshotCodec() });
+    const second = await LocalStore.open({ root, snapshotCodec: testSnapshotCodec() });
+
+    try {
+      await first.install(
+        preparedPack("react-base", "1.0.0", [practice("react.api.layered-design")]),
+      );
+      const reindexed = await LocalStore.reindex({ root, snapshotCodec: testSnapshotCodec() });
+      reindexed.close();
+
+      await second.install(
+        preparedPack("react-team", "1.0.0", [practice("react.api.team-guidance")]),
+      );
+
+      const restarted = await LocalStore.open({ root, snapshotCodec: testSnapshotCodec() });
+      try {
+        expect(restarted.installedPacks().map((pack) => pack.name)).toEqual([
+          "react-base",
+          "react-team",
+        ]);
+      } finally {
+        restarted.close();
+      }
+    } finally {
+      first.close();
+      second.close();
+      await rm(rootPath, { recursive: true, force: true });
+    }
+  });
+
+  test("preserves manifest and active artifacts when reindex cannot validate a recovery source", async () => {
+    await withStore(async (store, rootPath) => {
+      const installed = await store.install(
+        preparedPack("react-base", "1.0.0", [practice("react.api.layered-design")]),
+      );
+      const manifest = await readManifest(rootPath);
+      const artifact = join(
+        rootPath,
+        "packs",
+        installed.pack.storageKey,
+        installed.pack.artifactDigest,
+      );
+      store.close();
+      await writeFile(join(rootPath, "store.sqlite"), "not a SQLite database", "utf8");
+      await writeFile(join(artifact, "pack.yaml"), '{"name":"tampered","version":"1.0.0"}', "utf8");
+
+      await expect(
+        LocalStore.reindex({ root: storageRoot(rootPath), snapshotCodec: testSnapshotCodec() }),
+      ).rejects.toBeInstanceOf(StoreReindexError);
+      expect(await readManifest(rootPath)).toEqual(manifest);
+      await expect(stat(artifact)).resolves.toBeDefined();
+    });
+  });
+
+  test("rejects reindex while an interrupted operation journal is unresolved", async () => {
+    await withStore(async (store, rootPath) => {
+      await store.install(
+        preparedPack("react-base", "1.0.0", [practice("react.api.layered-design")]),
+      );
+      const oldManifest = await readManifest(rootPath);
+      const targetManifest = { ...oldManifest, generation: oldManifest.generation + 1 };
+      store.close();
+      await writeOperationJournal(
+        storageRoot(rootPath),
+        createOperationJournal("reindex-journal", "upgrade", oldManifest, targetManifest),
+      );
+
+      await expect(
+        LocalStore.reindex({ root: storageRoot(rootPath), snapshotCodec: testSnapshotCodec() }),
+      ).rejects.toBeInstanceOf(StoreReindexError);
+      expect(await readManifest(rootPath)).toEqual(oldManifest);
+    });
   });
 });

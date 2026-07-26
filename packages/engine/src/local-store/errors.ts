@@ -50,6 +50,28 @@ export class StoreInvariantError extends LocalStoreError {
   override readonly name: string = "StoreInvariantError";
 }
 
+export class StoreRecoveryRequiredError extends LocalStoreError {
+  override readonly name: string = "StoreRecoveryRequiredError";
+
+  constructor(
+    message: string,
+    override readonly cause?: unknown,
+  ) {
+    super(message);
+  }
+}
+
+export class StoreReindexError extends LocalStoreError {
+  override readonly name: string = "StoreReindexError";
+
+  constructor(
+    message: string,
+    override readonly cause?: unknown,
+  ) {
+    super(message);
+  }
+}
+
 export class StoreBusyError extends LocalStoreError {
   override readonly name: string = "StoreBusyError";
 
