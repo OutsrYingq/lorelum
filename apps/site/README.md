@@ -41,10 +41,10 @@ cd apps/site && npx wrangler dev --port 8788
 Deploy:
 
 ```bash
-bun run build:site && bun run deploy:site   # manual direct upload, no Workers Builds quota
-git push origin main                        # or: Workers Builds auto-build on main
+bun run build:site && bun run deploy:site   # manual direct upload, no build quota
+git push origin main                        # or: GitHub Actions auto-deploy (path-filtered)
 ```
 
-See `docs/site-deploy.md` for the full deployment workflow (branch control,
-quotas, release), and `docs/research/tanstack-fumadocs-spike.md` for the
-spike conclusion and risks.
+See `docs/development/site-deploy.md` for the full deployment workflow (path
+filtering, secrets, release), and `docs/research/tanstack-fumadocs-spike.md` for
+the spike conclusion and risks.

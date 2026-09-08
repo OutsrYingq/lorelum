@@ -61,4 +61,5 @@ bun run lint
 
 ## Deployment
 
-Workers Builds deploys `main` only. See [`docs/site-deploy.md`](../../docs/site-deploy.md).
+GitHub Actions deploys `main` on `apps/site` path matches only. See
+[`docs/development/site-deploy.md`](../../docs/development/site-deploy.md).
