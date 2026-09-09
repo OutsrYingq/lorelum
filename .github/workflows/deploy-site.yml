@@ -24,6 +24,8 @@ jobs:
     name: build · deploy to Cloudflare Workers
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    # Scope deployment credentials to the production Environment.
+    environment: production
 
     steps:
       - name: Checkout

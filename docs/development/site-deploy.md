@@ -63,7 +63,7 @@ bun run build:site && bun run deploy:site
 | 触发 | push 到 `main` | 仅当改动命中 `apps/site/**`、`bun.lock`、`package.json` |
 | 手动触发 | `workflow_dispatch` | GitHub 页面 Actions → Deploy site → Run workflow，可跳过路径过滤强制重部署 |
 | 并发控制 | `concurrency: deploy-site` + `cancel-in-progress` | 连续 push 时旧部署取消，最新 commit 胜出 |
-| 认证 | repo secrets `CLOUDFLARE_API_TOKEN` / `CLOUDFLARE_ACCOUNT_ID` | Token 为 Cloudflare 后台创建的专用 deploy token |
+| 认证 | GitHub `production` Environment secrets：`CLOUDFLARE_API_TOKEN` / `CLOUDFLARE_ACCOUNT_ID` | Token 为 Cloudflare 后台创建的专用 deploy token |
 
 > 2026-09-09 之前自动部署走 Workers Builds Git 集成，任何 push 到 `main`（无论是否涉及站点）都会触发 Cloudflare 端构建。因 Workers Builds 不支持路径过滤，改为 GitHub Actions 方案，并在 Cloudflare 后台断开了 `lorelum` Worker 的 Git 集成（Settings → Build → Git repository → Manage → 断开），避免双路径重复部署。
 
