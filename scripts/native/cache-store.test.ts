@@ -20,7 +20,7 @@ function fixture(contents: string): NativeArtifactManifest {
     buildIdentity: digest(`build:${contents}`),
     recipeIdentity: digest("recipe"),
     platform: windows ? "win32" : "darwin",
-    arch: "x64",
+    arch: windows ? "x64" : "arm64",
     executable: executableName,
     source: { tag: "b10901", commit: "a".repeat(40), archiveSha256: digest("archive") },
     patchSha256: digest("patch"),
