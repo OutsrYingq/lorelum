@@ -63,6 +63,6 @@ lore backend stop
 
 ## 构建与支持范围
 
-源码开发先执行 `bun run build:native`；native candidate 位于 `packages/backend/.artifacts/native/embedding/darwin-arm64/`，由源码 backend 直接校验和启动。可安装的编译版必须通过 `bun run build:release` 生成，并保留 archive 内完整的 `native/darwin-arm64/` 目录，不能仅复制 `lore`。`bun run build:cli` 只生成通用 CLI binary，不携带配套 native runtime，不能作为 embedding 的发行构建。native manifest 和许可证说明见 [native 构建说明](../../native/embedding/README.md)。
+源码开发先执行 `bun run build:native`；native candidate 位于 `packages/backend/.artifacts/native/embedding/<target>/`（当前 target：`darwin-arm64`、`linux-x64`），由源码 backend 直接校验和启动。可安装的编译版必须通过 `bun run build:release` 生成，并保留 archive 内完整的 `native/<target>/` 目录，不能仅复制 `lore`（`build:release` 由 catalog 驱动，已可在 Linux 构建主机产出 `linux-x64` archive，但尚未发布，`install.sh` 也尚未放行 Linux）。`bun run build:cli` 只生成通用 CLI binary，不携带配套 native runtime，不能作为 embedding 的发行构建。native manifest 和许可证说明见 [native 构建说明](../../native/embedding/README.md)。
 
-当前 embedding 支持 macOS arm64，已在 M4 验证。Windows native、进程身份/ACL 和端到端验收尚未完成；Linux embedding 不在当前交付范围。普通 `lore query` 仍走原有 Engine 路径，semantic index/query 接入另行实施。
+当前 embedding 支持 macOS arm64（已在 M4 验证并具备 release 打包）。Linux x64 支持源码构建、运行与打包：在 Ubuntu 24.04（glibc 2.39，WSL2）完成过真实构建、backend→native 全链路验收、release staging/打包与编译版 CLI 生命周期（含篡改拒绝），产物为通用 x86-64 基线（无 AVX2/AVX-512 最低要求），仅链接 libc/libstdc++/libm/libgcc_s；尚未在其他发行版验证或正式发布。Windows native、进程身份/ACL 和端到端验收尚未完成。普通 `lore query` 仍走原有 Engine 路径，semantic index/query 接入另行实施。

@@ -7,20 +7,28 @@ const MAX_MANIFEST_BYTES = 16_384;
 const SHA256 = /^[a-f0-9]{64}$/;
 const FILE_NAME = /^[A-Za-z0-9_.-]+$/;
 
-export const DARWIN_ARM64_SYSTEM_DEPENDENCIES = Object.freeze(
-  new Set([
+export type NativeArtifactPlatform = "darwin" | "linux";
+export type NativeArtifactArch = "arm64" | "x64";
+
+/** Static llama-server builds may only link the operating system's own libraries. */
+export const NATIVE_SYSTEM_DEPENDENCIES: Readonly<
+  Record<"darwin-arm64" | "linux-x64", ReadonlySet<string>>
+> = {
+  "darwin-arm64": new Set([
     "/usr/lib/libSystem.B.dylib",
     "/System/Library/Frameworks/Accelerate.framework/Versions/A/Accelerate",
     "/usr/lib/libc++.1.dylib",
   ]),
-);
+  // Sonames from ldd on the Ubuntu 24.04 (glibc 2.39) build baseline.
+  "linux-x64": new Set(["libc.so.6", "libstdc++.so.6", "libm.so.6", "libgcc_s.so.1"]),
+};
 
 export interface NativeArtifactManifest {
   readonly schemaVersion: 1;
   readonly buildIdentity: string;
   readonly recipeIdentity: string;
-  readonly platform: "darwin";
-  readonly arch: "arm64";
+  readonly platform: NativeArtifactPlatform;
+  readonly arch: NativeArtifactArch;
   readonly executable: string;
   readonly source: {
     readonly tag: string;
@@ -59,7 +67,7 @@ export async function readNativeArtifactManifest(
   return parseNativeArtifactManifest(value);
 }
 
-/** Verify every declared native file and the macOS system-library allowlist. */
+/** Verify every declared native file and the target's system-library allowlist. */
 export async function verifyNativeArtifact(directory: string): Promise<NativeArtifactManifest> {
   const manifest = await readNativeArtifactManifest(directory);
   const expectedNames = new Set(["manifest.json", ...manifest.files.map((file) => file.path)]);
@@ -85,10 +93,14 @@ export async function verifyNativeArtifact(directory: string): Promise<NativeArt
   const executableInfo = await lstat(join(directory, manifest.executable));
   if (!executable || (executableInfo.mode & 0o111) === 0)
     throw new Error("native executable is missing execute permissions");
+  const target = `${manifest.platform}-${manifest.arch}`;
+  const allowed =
+    target === "darwin-arm64" || target === "linux-x64"
+      ? NATIVE_SYSTEM_DEPENDENCIES[target]
+      : undefined;
   if (
-    manifest.dynamicDependencies.some(
-      (dependency) => !DARWIN_ARM64_SYSTEM_DEPENDENCIES.has(dependency),
-    )
+    allowed === undefined ||
+    manifest.dynamicDependencies.some((dependency) => !allowed.has(dependency))
   )
     throw new Error("native artifact links an unsupported dynamic dependency");
   return manifest;
@@ -150,7 +162,14 @@ export function parseNativeArtifactManifest(value: unknown): NativeArtifactManif
     ],
     "manifest",
   );
-  if (manifest.schemaVersion !== 1 || manifest.platform !== "darwin" || manifest.arch !== "arm64")
+  const platform = text(manifest.platform, "manifest.platform");
+  const arch = text(manifest.arch, "manifest.arch");
+  if (
+    manifest.schemaVersion !== 1 ||
+    (platform !== "darwin" && platform !== "linux") ||
+    (arch !== "arm64" && arch !== "x64") ||
+    !Object.hasOwn(NATIVE_SYSTEM_DEPENDENCIES, `${platform}-${arch}`)
+  )
     throw new Error("native manifest target is unsupported");
   const files = array(manifest.files, "manifest.files").map((entry, index) => {
     const file = object(entry, `manifest.files[${index}]`);
@@ -180,8 +199,8 @@ export function parseNativeArtifactManifest(value: unknown): NativeArtifactManif
     schemaVersion: 1,
     buildIdentity: digest(manifest.buildIdentity, "manifest.buildIdentity"),
     recipeIdentity: digest(manifest.recipeIdentity, "manifest.recipeIdentity"),
-    platform: "darwin",
-    arch: "arm64",
+    platform,
+    arch,
     executable,
     source: {
       tag: text(source.tag, "manifest.source.tag"),

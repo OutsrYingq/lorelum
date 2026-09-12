@@ -16,7 +16,7 @@ const repositoryRoot = resolve(import.meta.dir, "../..");
 const artifact = resolveEmbeddingNativeArtifact(process.platform, process.arch);
 if (artifact === undefined)
   throw new Error(
-    `native lifecycle tests currently support darwin-arm64, got ${process.platform}-${process.arch}`,
+    `native lifecycle tests currently support darwin-arm64 and linux-x64, got ${process.platform}-${process.arch}`,
   );
 const executable = join(developmentEmbeddingArtifactDirectory(artifact), "llama-server");
 const model = join(repositoryRoot, ".cache/embedding-validation", buildConfig.model.fileName);
@@ -45,10 +45,11 @@ async function ensureHarness(): Promise<void> {
   const sourceRoot = await materializePatchedLlamaSource(repositoryRoot);
   const patchedMain = join(sourceRoot, "tools/server/main.cpp");
   mkdirSync(join(repositoryRoot, ".cache/native-liveness"), { recursive: true });
+  // The liveness harness links against the same patched server entrypoint it probes.
+  const compiler = artifact.platform === "darwin" ? ["xcrun", "clang++"] : ["c++"];
   const result = Bun.spawnSync(
     [
-      "xcrun",
-      "clang++",
+      ...compiler,
       "-std=c++17",
       "-pthread",
       patchedMain,
