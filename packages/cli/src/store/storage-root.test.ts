@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { resolve } from "node:path";
 
 import { CliError } from "../runtime/errors.js";
 import { resolveInvocationStorageRoot } from "./storage-root.js";
@@ -12,7 +13,7 @@ test("keeps the default Store when no override is supplied", () => {
 test("resolves a relative Store override from the invocation working directory", () => {
   expect(
     resolveInvocationStorageRoot(".git/lorelum/store", { rootPath: "/user/.lorelum" }, "/worktree"),
-  ).toEqual({ rootPath: "/worktree/.git/lorelum/store" });
+  ).toEqual({ rootPath: resolve("/worktree", ".git/lorelum/store") });
 });
 
 test("rejects an empty Store override", () => {

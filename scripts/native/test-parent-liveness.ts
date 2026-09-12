@@ -4,6 +4,7 @@ import {
   developmentEmbeddingArtifactDirectory,
   resolveEmbeddingNativeArtifact,
 } from "../../packages/backend/src/runtime/native/embedding/catalog";
+import { win32NativeToolchain } from "./win32-toolchain";
 /* eslint-disable no-await-in-loop -- Lifecycle states and process exits must be observed sequentially. */
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, statSync } from "node:fs";
@@ -16,11 +17,19 @@ const repositoryRoot = resolve(import.meta.dir, "../..");
 const artifact = resolveEmbeddingNativeArtifact(process.platform, process.arch);
 if (artifact === undefined)
   throw new Error(
-    `native lifecycle tests currently support darwin-arm64 and linux-x64, got ${process.platform}-${process.arch}`,
+    `native lifecycle tests currently support darwin-arm64, linux-x64, and win32-x64, got ${process.platform}-${process.arch}`,
   );
-const executable = join(developmentEmbeddingArtifactDirectory(artifact), "llama-server");
+const executableName = artifact.platform === "win32" ? "llama-server.exe" : "llama-server";
+const executable = join(developmentEmbeddingArtifactDirectory(artifact), executableName);
 const model = join(repositoryRoot, ".cache/embedding-validation", buildConfig.model.fileName);
-const harness = join(repositoryRoot, ".cache/native-liveness/stalled-llama-server");
+const harnessName =
+  process.platform === "win32" ? "stalled-llama-server.exe" : "stalled-llama-server";
+const harness = join(repositoryRoot, ".cache/native-liveness", harnessName);
+/** Minimal child environment: no shell PATH on POSIX, only the system root on Windows. */
+const childEnvironment =
+  process.platform === "win32"
+    ? { SystemRoot: process.env.SystemRoot ?? "C:\\Windows" }
+    : { PATH: "/usr/bin:/bin" };
 
 function sha256File(path: string): string {
   return createHash("sha256").update(readFileSync(path)).digest("hex");
@@ -46,18 +55,28 @@ async function ensureHarness(): Promise<void> {
   const patchedMain = join(sourceRoot, "tools/server/main.cpp");
   mkdirSync(join(repositoryRoot, ".cache/native-liveness"), { recursive: true });
   // The liveness harness links against the same patched server entrypoint it probes.
-  const compiler = artifact.platform === "darwin" ? ["xcrun", "clang++"] : ["c++"];
+  let compiler: readonly string[] = ["c++"];
+  let environment: NodeJS.ProcessEnv | undefined = undefined;
+  let staticFlags: readonly string[] = [];
+  if (artifact.platform === "darwin") compiler = ["xcrun", "clang++"];
+  if (artifact.platform === "win32") {
+    const toolchain = win32NativeToolchain(repositoryRoot);
+    compiler = [toolchain.gppExecutable];
+    environment = { ...process.env, ...toolchain.childEnvironment };
+    staticFlags = ["-static"];
+  }
   const result = Bun.spawnSync(
     [
       ...compiler,
       "-std=c++17",
       "-pthread",
+      ...staticFlags,
       patchedMain,
       join(import.meta.dir, "stalled-llama-server.cpp"),
       "-o",
       harness,
     ],
-    { stdout: "pipe", stderr: "pipe" },
+    { stdout: "pipe", stderr: "pipe", ...(environment === undefined ? {} : { env: environment }) },
   );
   if (result.exitCode !== 0) {
     throw new Error(`failed to compile stalled-main harness: ${result.stderr.toString()}`);
@@ -97,7 +116,7 @@ async function owner(mode: TestMode): Promise<never> {
       stdin: "pipe",
       stdout: mode === "stalled-main" ? "pipe" : "ignore",
       stderr: "ignore",
-      env: { PATH: "/usr/bin:/bin" },
+      env: childEnvironment,
     },
   );
   console.log(`child:${child.pid}`);

@@ -23,12 +23,22 @@ export async function buildReleaseArchive(): Promise<ReleaseArchive> {
   const version = await readCliVersion();
   const staging = await buildReleaseStaging();
   const target = staging.artifact.id;
+  const windows = process.platform === "win32";
   const name = `lore-${version}-${target}`;
+  const cliName = windows ? "lore.exe" : "lore";
+  // Windows archives are zip via the System32 bsdtar; POSIX keeps tar.gz.
+  const archiveExtension = windows ? "zip" : "tar.gz";
+  const tar = windows
+    ? join(process.env.SystemRoot ?? "C:\\Windows", "System32", "tar.exe")
+    : "tar";
   const packageDirectory = join(repositoryRoot, "dist/release/package");
   await rm(packageDirectory, { recursive: true, force: true });
   const packageRoot = join(packageDirectory, name);
   await mkdir(packageRoot, { recursive: true });
-  await cp(staging.cli, join(packageRoot, "lore"), { force: true, preserveTimestamps: true });
+  await cp(staging.cli, join(packageRoot, cliName), {
+    force: true,
+    preserveTimestamps: true,
+  });
   await cp(join(staging.directory, "native"), join(packageRoot, "native"), {
     recursive: true,
     force: true,
@@ -48,8 +58,11 @@ export async function buildReleaseArchive(): Promise<ReleaseArchive> {
   const artifactsDirectory = join(repositoryRoot, "dist/release/artifacts");
   await rm(artifactsDirectory, { recursive: true, force: true });
   await mkdir(artifactsDirectory, { recursive: true });
-  const archive = join(artifactsDirectory, `${name}.tar.gz`);
-  const archiveResult = Bun.spawnSync(["tar", "-C", dirname(packageRoot), "-czf", archive, name], {
+  const archive = join(artifactsDirectory, `${name}.${archiveExtension}`);
+  const archiveArguments = windows
+    ? [tar, "-C", dirname(packageRoot), "-a", "-cf", archive, name]
+    : [tar, "-C", dirname(packageRoot), "-czf", archive, name];
+  const archiveResult = Bun.spawnSync(archiveArguments, {
     cwd: repositoryRoot,
     stdout: "pipe",
     stderr: "pipe",
@@ -58,7 +71,7 @@ export async function buildReleaseArchive(): Promise<ReleaseArchive> {
     throw new Error(`release archive creation failed: ${archiveResult.stderr.toString()}`);
   const archiveSha256 = await sha256File(archive);
   const checksums = join(artifactsDirectory, "SHA256SUMS");
-  await Bun.write(checksums, `${archiveSha256}  ${name}.tar.gz\n`);
+  await Bun.write(checksums, `${archiveSha256}  ${name}.${archiveExtension}\n`);
   const nativeManifest = await readNativeArtifactManifest(join(packageRoot, "native", target));
   const metadata = join(artifactsDirectory, "release-metadata.json");
   await Bun.write(
@@ -73,9 +86,9 @@ export async function buildReleaseArchive(): Promise<ReleaseArchive> {
         nativeManifestSha256: await sha256File(
           join(packageRoot, "native", target, "manifest.json"),
         ),
-        cliSha256: await sha256File(join(packageRoot, "lore")),
+        cliSha256: await sha256File(join(packageRoot, cliName)),
         archive: {
-          fileName: `${name}.tar.gz`,
+          fileName: `${name}.${archiveExtension}`,
           bytes: (await stat(archive)).size,
           sha256: archiveSha256,
         },

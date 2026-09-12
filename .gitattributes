@@ -1,3 +1,8 @@
 # Generated files are normalized to LF so Windows checkouts don't produce
 # phantom diffs (routeTree.gen.ts repeatedly blocked rebases with CRLF churn).
 apps/site/src/routeTree.gen.ts text eol=lf
+
+# Digest-pinned build inputs must stay byte-exact; CRLF checkouts break their SHA-256.
+native/embedding/patches/*.patch text eol=lf
+native/embedding/build-config.json text eol=lf
+packages/backend/src/runtime/native/embedding/*.json text eol=lf

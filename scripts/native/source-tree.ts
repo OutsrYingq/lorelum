@@ -35,9 +35,24 @@ export async function materializePatchedLlamaSource(repositoryRoot: string): Pro
   });
   rmSync(sourceRoot, { recursive: true, force: true });
   mkdirSync(sourceRoot, { recursive: true });
-  run(["tar", "-xzf", sourceArchive, "-C", sourceRoot, "--strip-components=1"], repositoryRoot);
-  run(["patch", "--dry-run", "--batch", "-p1", "-i", patchPath], sourceRoot);
-  run(["patch", "--batch", "-p1", "-i", patchPath], sourceRoot);
+  // GNU tar treats "D:\..." as host:path; Windows always extracts through System32 bsdtar.
+  const tarExecutable =
+    process.platform === "win32"
+      ? join(process.env.SystemRoot ?? "C:\\Windows", "System32", "tar.exe")
+      : "tar";
+  run(
+    [tarExecutable, "-xzf", sourceArchive, "-C", sourceRoot, "--strip-components=1"],
+    repositoryRoot,
+  );
+  if (process.platform === "win32") {
+    // Windows has no `patch`; git apply serves the same reviewed diff from the same digest pin.
+    const ceiling = { GIT_CEILING_DIRECTORIES: repositoryRoot };
+    run(["git", "apply", "--check", patchPath], sourceRoot, ceiling);
+    run(["git", "apply", patchPath], sourceRoot, ceiling);
+  } else {
+    run(["patch", "--dry-run", "--batch", "-p1", "-i", patchPath], sourceRoot);
+    run(["patch", "--batch", "-p1", "-i", patchPath], sourceRoot);
+  }
   if (
     !readFileSync(join(sourceRoot, "tools/server/main.cpp"), "utf8").includes(
       "start_parent_liveness_watcher",
@@ -52,8 +67,17 @@ function sha256File(path: string): string {
   return createHash("sha256").update(readFileSync(path)).digest("hex");
 }
 
-function run(command: readonly string[], cwd: string): void {
-  const result = Bun.spawnSync([...command], { cwd, stdout: "pipe", stderr: "pipe" });
+function run(
+  command: readonly string[],
+  cwd: string,
+  extraEnvironment?: Readonly<Record<string, string>>,
+): void {
+  const result = Bun.spawnSync([...command], {
+    cwd,
+    ...(extraEnvironment === undefined ? {} : { env: { ...process.env, ...extraEnvironment } }),
+    stdout: "pipe",
+    stderr: "pipe",
+  });
   if (result.exitCode !== 0) {
     throw new Error(
       `command failed (${result.exitCode}): ${command.join(" ")}\n${result.stdout.toString()}${result.stderr.toString()}`,

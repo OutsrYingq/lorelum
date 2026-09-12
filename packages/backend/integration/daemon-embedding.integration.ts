@@ -8,7 +8,7 @@ import { readRecord } from "../src/runtime/runtime-state";
 import { isSameProcess, type ProcessIdentity } from "../src/runtime/process-identity";
 import { DEFAULT_BACKEND_SETTINGS } from "../src/config/model";
 import { modelPathFromArgs } from "./support/native";
-import { waitUntil, waitForProcessExit } from "./support/process";
+import { suspendProcess, waitUntil, waitForProcessExit } from "./support/process";
 
 const modelPath = modelPathFromArgs();
 const home = await realpath(await mkdtemp(join(tmpdir(), "lore-model-daemon-")));
@@ -90,7 +90,7 @@ async function verifyResidentReuse(client: BackendClient) {
 async function verifyUnresponsiveNativeRecovery(client: BackendClient) {
   const blocked = await nativeIdentity();
   // A stopped process cannot answer: the timeout no longer depends on CPU speed or batch size.
-  process.kill(blocked.pid, "SIGSTOP");
+  await suspendProcess(blocked.pid);
   await assert.rejects(client.embed("query", ["blocked native request"]), {
     code: "embedding.deadline-exceeded",
   });

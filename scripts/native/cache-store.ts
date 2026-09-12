@@ -194,14 +194,16 @@ async function requiredArtifact(
 async function ensurePrivateDirectory(path: string): Promise<void> {
   await mkdir(path, { recursive: true, mode: 0o700 });
   const info = await lstat(path);
+  // POSIX verifies the owner and permission bits; Windows reports no uid and 0o777 modes,
+  // so privacy there is the per-user profile root instead of mode bits.
+  const posixPrivate =
+    (process.getuid !== undefined && info.uid !== process.getuid()) || (info.mode & 0o077) !== 0;
   if (
     !info.isDirectory() ||
     info.isSymbolicLink() ||
-    (process.getuid !== undefined && info.uid !== process.getuid()) ||
-    (info.mode & 0o077) !== 0
-  ) {
+    (process.platform !== "win32" && posixPrivate)
+  )
     throw new Error("native build cache directory is not private");
-  }
 }
 
 function assertCacheAddress(target: string, cacheKey: string): void {

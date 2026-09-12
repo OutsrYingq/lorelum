@@ -78,6 +78,56 @@
         "-DGGML_F16C=OFF",
         "-DGGML_OPENMP=OFF"
       ]
+    },
+    "win32-x64": {
+      "cmake": {
+        "version": "3.31.6",
+        "win64Url": "https://github.com/Kitware/CMake/releases/download/v3.31.6/cmake-3.31.6-windows-x86_64.zip",
+        "win64Bytes": 46473549,
+        "win64Sha256": "d163cd3ab4959b0a53fa8988f2ddbd2e6c501658201e6a154386bad9dbe4f836"
+      },
+      "compiler": {
+        "name": "winlibs-x86_64-posix-seh-gcc-15.2.0-mingw-w64ucrt-14.0.0-r7",
+        "url": "https://github.com/brechtsanders/winlibs_mingw/releases/download/15.2.0posix-14.0.0-ucrt-r7/winlibs-x86_64-posix-seh-gcc-15.2.0-mingw-w64ucrt-14.0.0-r7.zip",
+        "bytes": 267593703,
+        "sha256": "cb2fbad6162540cdf5e1facdce08d4dac359e8cf64f7f696a99274291763b815",
+        "rootDirectory": "mingw64"
+      },
+      "cmakeFlags": [
+        "-G",
+        "MinGW Makefiles",
+        "-DCMAKE_BUILD_TYPE=Release",
+        "-DCMAKE_C_COMPILER=gcc",
+        "-DCMAKE_CXX_COMPILER=g++",
+        "-DCMAKE_C_FLAGS=-D_WIN32_WINNT=0x0A00",
+        "-DCMAKE_CXX_FLAGS=-D_WIN32_WINNT=0x0A00",
+        "-DCMAKE_EXE_LINKER_FLAGS=-static",
+        "-DLLAMA_BUILD_NUMBER=@BUILD_NUMBER@",
+        "-DLLAMA_BUILD_COMMIT=@BUILD_COMMIT@",
+        "-DBUILD_SHARED_LIBS=OFF",
+        "-DLLAMA_BUILD_TESTS=OFF",
+        "-DLLAMA_BUILD_EXAMPLES=OFF",
+        "-DLLAMA_BUILD_TOOLS=ON",
+        "-DLLAMA_BUILD_SERVER=ON",
+        "-DLLAMA_BUILD_APP=OFF",
+        "-DLLAMA_BUILD_UI=OFF",
+        "-DLLAMA_USE_PREBUILT_UI=OFF",
+        "-DLLAMA_OPENSSL=OFF",
+        "-DLLAMA_SUBPROCESS=OFF",
+        "-DGGML_METAL=OFF",
+        "-DGGML_CUDA=OFF",
+        "-DGGML_VULKAN=OFF",
+        "-DGGML_OPENCL=OFF",
+        "-DGGML_RPC=OFF",
+        "-DGGML_NATIVE=OFF",
+        "-DGGML_SSE42=OFF",
+        "-DGGML_AVX=OFF",
+        "-DGGML_AVX2=OFF",
+        "-DGGML_BMI2=OFF",
+        "-DGGML_FMA=OFF",
+        "-DGGML_F16C=OFF",
+        "-DGGML_OPENMP=OFF"
+      ]
     }
   }
 }

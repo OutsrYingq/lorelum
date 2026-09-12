@@ -24,7 +24,7 @@ export async function buildReleaseStaging(): Promise<{
   const artifact = resolveEmbeddingNativeArtifact(process.platform, process.arch);
   if (artifact === undefined)
     throw new Error(
-      `release staging currently supports darwin-arm64, got ${process.platform}-${process.arch}`,
+      `release staging currently supports darwin-arm64, linux-x64, and win32-x64, got ${process.platform}-${process.arch}`,
     );
   await runNativeBuild();
   const nativeDirectory = developmentEmbeddingArtifactDirectory(artifact);
@@ -32,8 +32,14 @@ export async function buildReleaseStaging(): Promise<{
   const directory = join(repositoryRoot, "dist/release", artifact.id);
   await rm(directory, { recursive: true, force: true });
   await mkdir(directory, { recursive: true });
-  const cli = join(directory, "lore");
-  const compiled = await compileReleaseCli({ nativeManifest: manifest, outfile: cli, artifact });
+  // Bun's compiler appends ".exe" to the outfile on Windows targets.
+  const cliOutfile = join(directory, process.platform === "win32" ? "lore.exe" : "lore");
+  const compiled = await compileReleaseCli({
+    nativeManifest: manifest,
+    outfile: cliOutfile,
+    artifact,
+  });
+  const cli = compiled.output;
   await cp(nativeDirectory, join(directory, "native", artifact.id), {
     recursive: true,
     force: true,

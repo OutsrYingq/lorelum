@@ -47,7 +47,7 @@ test("release compiler embeds its supplied manifest and disables cwd dotenv disc
     );
     await writeFile(join(directory, ".env"), "LORELUM_RELEASE_TEST=from-dotenv\n");
 
-    await compileReleaseCli({
+    const compiled = await compileReleaseCli({
       nativeManifest: manifest,
       outfile: executable,
       entrypoint,
@@ -55,7 +55,7 @@ test("release compiler embeds its supplied manifest and disables cwd dotenv disc
       artifact,
       target: `bun-${process.platform}-${process.arch}` as Bun.Build.CompileTarget,
     });
-    const child = Bun.spawn([executable], { cwd: directory, stdout: "pipe", stderr: "pipe" });
+    const child = Bun.spawn([compiled.output], { cwd: directory, stdout: "pipe", stderr: "pipe" });
     const [stdout, stderr, exitCode] = await Promise.all([
       new Response(child.stdout).text(),
       new Response(child.stderr).text(),
@@ -83,14 +83,14 @@ test("release compiler replaces the embedding catalog's trusted manifest", async
       ].join("\n"),
     );
 
-    await compileReleaseCli({
+    const compiled = await compileReleaseCli({
       nativeManifest: releaseManifest,
       outfile: executable,
       entrypoint,
       artifact,
       target: `bun-${process.platform}-${process.arch}` as Bun.Build.CompileTarget,
     });
-    const child = Bun.spawn([executable], { stdout: "pipe", stderr: "pipe" });
+    const child = Bun.spawn([compiled.output], { stdout: "pipe", stderr: "pipe" });
     const [stdout, stderr, exitCode] = await Promise.all([
       new Response(child.stdout).text(),
       new Response(child.stderr).text(),

@@ -1,3 +1,4 @@
+import { isAbsolute } from "node:path";
 import { z } from "zod";
 
 /**
@@ -5,7 +6,8 @@ import { z } from "zod";
  * remain intentionally broad here: QueryService owns their domain validation.
  */
 export const queryRequestSchema = z.strictObject({
-  storageRoot: z.string().min(1).regex(/^\//),
+  // The store root must be explicit and absolute; the separator convention is the host's.
+  storageRoot: z.string().min(1).refine(isAbsolute, "storageRoot must be an absolute path"),
   query: z.strictObject({
     text: z.string(),
     limit: z.int().optional(),

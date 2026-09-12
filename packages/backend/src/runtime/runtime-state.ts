@@ -53,11 +53,13 @@ export async function checkDirectory(directory: string, create = false): Promise
   }
   try {
     const info = await lstat(absolute);
+    // Windows reports neither a uid nor meaningful mode bits; privacy there is the
+    // per-user profile root, so only the structural checks apply.
     if (
       !info.isDirectory() ||
       info.isSymbolicLink() ||
-      info.uid !== process.getuid?.() ||
-      (info.mode & 0o077) !== 0
+      (process.platform !== "win32" &&
+        (info.uid !== process.getuid?.() || (info.mode & 0o077) !== 0))
     )
       throw new BackendError("backend.state-invalid");
     return true;
@@ -85,9 +87,9 @@ export async function assertPrivateFile(path: string): Promise<boolean> {
     if (
       !info.isFile() ||
       info.isSymbolicLink() ||
-      info.uid !== process.getuid?.() ||
-      (info.mode & 0o077) !== 0 ||
-      info.nlink !== 1
+      info.nlink !== 1 ||
+      (process.platform !== "win32" &&
+        (info.uid !== process.getuid?.() || (info.mode & 0o077) !== 0))
     )
       throw new BackendError("backend.state-invalid");
     return true;
@@ -111,8 +113,8 @@ export async function readRecord(directory: string): Promise<RuntimeRecord | und
     const info = await file.stat();
     if (
       info.size > MAX_RUNTIME_RECORD_BYTES ||
-      info.uid !== process.getuid?.() ||
-      (info.mode & 0o077) !== 0
+      (process.platform !== "win32" &&
+        (info.uid !== process.getuid?.() || (info.mode & 0o077) !== 0))
     )
       throw new BackendError("backend.state-invalid");
     const rawText = await file.readFile("utf8");

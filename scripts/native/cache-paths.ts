@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
-import { isAbsolute, join, win32 } from "node:path";
+import { isAbsolute, join, posix, win32 } from "node:path";
 
 const CACHE_SCHEMA_VERSION = 1;
 
@@ -24,8 +24,9 @@ export function nativeBuildCacheRoot(options: NativeBuildCachePathOptions = {}):
   const platform = options.platform ?? process.platform;
   const homeDirectory = options.homeDirectory ?? homedir();
   const environment = options.environment ?? process.env;
+  // The requested platform decides the separator convention, never the host OS.
   if (platform === "darwin")
-    return join(homeDirectory, "Library", "Caches", "Lorelum", "native", "v1");
+    return posix.join(homeDirectory, "Library", "Caches", "Lorelum", "native", "v1");
   if (platform === "win32") {
     const localAppData = environment.LOCALAPPDATA;
     return win32.join(
@@ -39,8 +40,8 @@ export function nativeBuildCacheRoot(options: NativeBuildCachePathOptions = {}):
     );
   }
   const xdgCache = environment.XDG_CACHE_HOME;
-  return join(
-    xdgCache && isAbsolute(xdgCache) ? xdgCache : join(homeDirectory, ".cache"),
+  return posix.join(
+    xdgCache && isAbsolute(xdgCache) ? xdgCache : posix.join(homeDirectory, ".cache"),
     "lorelum",
     "native",
     "v1",

@@ -1,11 +1,14 @@
 import { expect, test } from "bun:test";
+import { join } from "node:path";
 import { DEFAULT_MODEL_DOWNLOAD_URL, resolveEmbeddingConfig } from "./embedding";
 
 test("missing embedding config is allowed", () => {
-  expect(resolveEmbeddingConfig(undefined, "/home/example")).toMatchObject({
+  // The example home must be absolute for the host running the test.
+  const exampleHome = process.platform === "win32" ? "C:\\home\\example" : "/home/example";
+  expect(resolveEmbeddingConfig(undefined, exampleHome)).toMatchObject({
     threads: 4,
     maxTokens: 512,
-    cacheDirectory: "/home/example/.lorelum/models",
+    cacheDirectory: join(exampleHome, ".lorelum", "models"),
     download: { enabled: true, url: DEFAULT_MODEL_DOWNLOAD_URL },
   });
 });

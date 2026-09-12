@@ -9,73 +9,91 @@ const target = "darwin-arm64";
 const archiveName = `lore-${version}-${target}.tar.gz`;
 const packageName = archiveName.slice(0, -".tar.gz".length);
 const repositoryRoot = join(import.meta.dir, "..", "..");
+// The POSIX installer runs under Git Bash on Windows hosts, where MSYS shasum emits
+// a leading mode marker that its parsing does not accept; Windows installs use
+// install.ps1 instead, which install-ps1.integration.test.ts covers.
+const posixOnly = process.platform !== "win32";
 
-test("installer verifies, extracts, and atomically links one platform package", async () => {
-  const root = await mkdtemp(join(tmpdir(), "lore-install-integration-"));
-  const server = await createReleaseServer(root);
-  try {
-    const result = await runInstaller(root, server.url.origin);
-    expect(result.exitCode).toBe(0);
-    expect(result.stderr).toBe("");
-    const command = join(root, "bin", "lore");
-    expect(await realpath(command)).toBe(
-      await realpath(join(root, "share", "versions", version, "lore")),
-    );
-    expect(await readFile(join(root, "share", "versions", version, "LICENSE"), "utf8")).toBe(
-      "Apache-2.0 fixture\n",
-    );
-    expect(result.stdout).toContain(`Installed lore ${version}`);
-  } finally {
-    server.stop(true);
-    await rm(root, { recursive: true, force: true });
-  }
-});
+test.skipIf(!posixOnly)(
+  "installer verifies, extracts, and atomically links one platform package",
+  async () => {
+    const root = await mkdtemp(join(tmpdir(), "lore-install-integration-"));
+    const server = await createReleaseServer(root);
+    try {
+      const result = await runInstaller(root, server.url.origin);
+      expect(result.exitCode).toBe(0);
+      expect(result.stderr).toBe("");
+      const command = join(root, "bin", "lore");
+      expect(await realpath(command)).toBe(
+        await realpath(join(root, "share", "versions", version, "lore")),
+      );
+      expect(await readFile(join(root, "share", "versions", version, "LICENSE"), "utf8")).toBe(
+        "Apache-2.0 fixture\n",
+      );
+      expect(result.stdout).toContain(`Installed lore ${version}`);
+    } finally {
+      server.stop(true);
+      await rm(root, { recursive: true, force: true });
+    }
+  },
+);
 
-test("installer resolves the latest stable release when no version is supplied", async () => {
-  const root = await mkdtemp(join(tmpdir(), "lore-install-latest-"));
-  const server = await createReleaseServer(root);
-  try {
-    const result = await runInstaller(root, server.url.origin, []);
-    expect(result.exitCode).toBe(0);
-    expect(result.stderr).toBe("");
-    expect(Bun.file(join(root, "share", "versions", version, "lore")).exists()).resolves.toBe(true);
-    expect(result.stdout).toContain(`Installed lore ${version}`);
-  } finally {
-    server.stop(true);
-    await rm(root, { recursive: true, force: true });
-  }
-});
+test.skipIf(!posixOnly)(
+  "installer resolves the latest stable release when no version is supplied",
+  async () => {
+    const root = await mkdtemp(join(tmpdir(), "lore-install-latest-"));
+    const server = await createReleaseServer(root);
+    try {
+      const result = await runInstaller(root, server.url.origin, []);
+      expect(result.exitCode).toBe(0);
+      expect(result.stderr).toBe("");
+      expect(Bun.file(join(root, "share", "versions", version, "lore")).exists()).resolves.toBe(
+        true,
+      );
+      expect(result.stdout).toContain(`Installed lore ${version}`);
+    } finally {
+      server.stop(true);
+      await rm(root, { recursive: true, force: true });
+    }
+  },
+);
 
-test("installer uses the exact tag returned for the latest release assets", async () => {
-  const root = await mkdtemp(join(tmpdir(), "lore-install-latest-tag-"));
-  const server = await createReleaseServer(root, { latestTag: version, releaseTag: version });
-  try {
-    const result = await runInstaller(root, server.url.origin, []);
-    expect(result.exitCode).toBe(0);
-    expect(result.stdout).toContain(`Installed lore ${version}`);
-  } finally {
-    server.stop(true);
-    await rm(root, { recursive: true, force: true });
-  }
-});
+test.skipIf(!posixOnly)(
+  "installer uses the exact tag returned for the latest release assets",
+  async () => {
+    const root = await mkdtemp(join(tmpdir(), "lore-install-latest-tag-"));
+    const server = await createReleaseServer(root, { latestTag: version, releaseTag: version });
+    try {
+      const result = await runInstaller(root, server.url.origin, []);
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toContain(`Installed lore ${version}`);
+    } finally {
+      server.stop(true);
+      await rm(root, { recursive: true, force: true });
+    }
+  },
+);
 
-test("installer rejects a latest-release tag that is not semantic versioning", async () => {
-  const root = await mkdtemp(join(tmpdir(), "lore-install-invalid-latest-"));
-  const server = await createReleaseServer(root, { latestTag: "release-candidate" });
-  try {
-    const result = await runInstaller(root, server.url.origin, []);
-    expect(result.exitCode).toBe(1);
-    expect(result.stderr).toContain("cannot resolve the latest stable release");
-    await expect(Bun.file(join(root, "share", "versions", version, "lore")).exists()).resolves.toBe(
-      false,
-    );
-  } finally {
-    server.stop(true);
-    await rm(root, { recursive: true, force: true });
-  }
-});
+test.skipIf(!posixOnly)(
+  "installer rejects a latest-release tag that is not semantic versioning",
+  async () => {
+    const root = await mkdtemp(join(tmpdir(), "lore-install-invalid-latest-"));
+    const server = await createReleaseServer(root, { latestTag: "release-candidate" });
+    try {
+      const result = await runInstaller(root, server.url.origin, []);
+      expect(result.exitCode).toBe(1);
+      expect(result.stderr).toContain("cannot resolve the latest stable release");
+      await expect(
+        Bun.file(join(root, "share", "versions", version, "lore")).exists(),
+      ).resolves.toBe(false);
+    } finally {
+      server.stop(true);
+      await rm(root, { recursive: true, force: true });
+    }
+  },
+);
 
-test("installer leaves an unmanaged command untouched", async () => {
+test.skipIf(!posixOnly)("installer leaves an unmanaged command untouched", async () => {
   const root = await mkdtemp(join(tmpdir(), "lore-install-conflict-"));
   const server = await createReleaseServer(root);
   try {
@@ -111,7 +129,12 @@ async function createReleaseServer(
   await chmod(join(packageDirectory, "native", target, "llama-server"), 0o755);
   await mkdir(releases, { recursive: true });
   const archive = join(releases, archiveName);
-  const archived = Bun.spawnSync(["tar", "-C", root, "-czf", archive, packageName]);
+  // GNU tar treats "D:\..." as host:path; Windows always archives through System32 bsdtar.
+  const tar =
+    process.platform === "win32"
+      ? join(process.env.SystemRoot ?? "C:\\Windows", "System32", "tar.exe")
+      : "tar";
+  const archived = Bun.spawnSync([tar, "-C", root, "-czf", archive, packageName]);
   if (archived.exitCode !== 0) throw new Error("fixture archive creation failed");
   const sha256 = createHash("sha256")
     .update(Buffer.from(await Bun.file(archive).arrayBuffer()))

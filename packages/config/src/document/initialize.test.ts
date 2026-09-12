@@ -15,6 +15,22 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ConfigError, initializeConfig, loadConfig, resolveLorelumPaths } from "../index";
 
+/** File symlinks need Developer Mode or elevation on Windows; probe once instead of assuming. */
+async function canCreateSymlinks(): Promise<boolean> {
+  if (process.platform !== "win32") return true;
+  const directory = await mkdtemp(join(tmpdir(), "lorelum-symlink-probe-"));
+  try {
+    const target = join(directory, "target");
+    await writeFile(target, "fixture");
+    await symlink(target, join(directory, "link"));
+    return true;
+  } catch {
+    return false;
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+}
+
 async function fixture(run: (homeDirectory: string) => Promise<void>) {
   const home = await realpath(await mkdtemp(join(tmpdir(), "lorelum-config-init-")));
   try {
@@ -42,9 +58,13 @@ test("initializes an empty home with private directories and file", () =>
     expect(result.created).toBe(true);
     expect(result.filePath).toBe(join(home, ".lorelum", "config.yaml"));
     expect(await loadConfig({ homeDirectory: home })).toEqual({});
-    expect((await lstat(join(home, ".lorelum"))).mode & 0o777).toBe(0o700);
-    expect((await lstat(result.filePath)).mode & 0o777).toBe(0o600);
-    expect((await readFile(result.filePath, "utf8")).startsWith("# Lorelum")).toBe(true);
+    if (process.platform !== "win32") {
+      expect((await lstat(join(home, ".lorelum"))).mode & 0o777).toBe(0o700);
+      expect((await lstat(result.filePath)).mode & 0o777).toBe(0o600);
+    }
+    expect(
+      await readFile(result.filePath, "utf8").then((content) => content.startsWith("# Lorelum")),
+    ).toBe(true);
   }));
 
 test("concurrent initialization publishes exactly one file", () =>
@@ -74,7 +94,9 @@ test("existing valid, empty, comment-only, and corrupt files are never overwritt
         .created,
     ).toBe(false);
     expect(await readFile(paths.configFile, "utf8")).toBe(original);
-    expect((await lstat(paths.configFile)).mode & 0o777).toBe(0o640);
+    if (process.platform !== "win32") {
+      expect((await lstat(paths.configFile)).mode & 0o777).toBe(0o640);
+    }
 
     await writeFile(paths.configFile, "");
     expect(
@@ -98,6 +120,7 @@ test("existing valid, empty, comment-only, and corrupt files are never overwritt
 
 test("rejects a target symlink without touching its external target", () =>
   fixture(async (home) => {
+    if (!(await canCreateSymlinks())) return; // Symlink privileges are unavailable here.
     const paths = resolveLorelumPaths(home);
     await mkdir(paths.rootDirectory, { mode: 0o700 });
     const external = join(home, "external.yaml");
@@ -110,13 +133,15 @@ test("rejects a target symlink without touching its external target", () =>
 test("rejects a symlinked parent and oversized or cyclic initial documents", () =>
   fixture(async (home) => {
     const rootDirectory = join(home, ".lorelum");
-    const external = await mkdtemp(join(tmpdir(), "lorelum-external-"));
-    try {
-      await symlink(external, rootDirectory);
-      await expect(initializeConfig({ homeDirectory: home })).rejects.toEqual(new ConfigError());
-    } finally {
-      await unlink(rootDirectory).catch(() => {});
-      await rm(external, { recursive: true, force: true });
+    if (await canCreateSymlinks()) {
+      const external = await mkdtemp(join(tmpdir(), "lorelum-external-"));
+      try {
+        await symlink(external, rootDirectory);
+        await expect(initializeConfig({ homeDirectory: home })).rejects.toEqual(new ConfigError());
+      } finally {
+        await unlink(rootDirectory).catch(() => {});
+        await rm(external, { recursive: true, force: true });
+      }
     }
     const oversized: Record<string, unknown> = { value: "x".repeat(20_000) };
     await expect(initializeConfig({ homeDirectory: home }, oversized)).rejects.toEqual(

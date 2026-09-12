@@ -173,7 +173,8 @@ async function setupGit(directory: string, gitArguments: readonly string[]): Pro
       TEMP: process.env.TEMP,
       TMP: process.env.TMP,
       TMPDIR: process.env.TMPDIR,
-      GIT_CONFIG_GLOBAL: devNull,
+      // os.devNull is the MSYS path on Windows where git cannot open the config.
+      GIT_CONFIG_GLOBAL: process.platform === "win32" ? "nul" : devNull,
       GIT_CONFIG_NOSYSTEM: "1",
       GIT_TERMINAL_PROMPT: "0",
     },

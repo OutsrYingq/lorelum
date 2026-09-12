@@ -8,33 +8,36 @@ import { nativeBuildCacheEntryDirectory } from "./cache-paths";
 import { materializeNativeBuildCache } from "./cache-store";
 
 const cacheKey = "a".repeat(64);
-const target = "darwin-arm64";
 const digest = (value: string) => createHash("sha256").update(value).digest("hex");
+// Fixtures mirror the host platform: POSIX targets gate on the execute bit, Windows on .exe.
+const windows = process.platform === "win32";
+const target = windows ? "win32-x64" : "darwin-arm64";
+const executableName = windows ? "llama-server.exe" : "llama-server";
 
 function fixture(contents: string): NativeArtifactManifest {
   return {
     schemaVersion: 1,
     buildIdentity: digest(`build:${contents}`),
     recipeIdentity: digest("recipe"),
-    platform: "darwin",
-    arch: "arm64",
-    executable: "llama-server",
+    platform: windows ? "win32" : "darwin",
+    arch: "x64",
+    executable: executableName,
     source: { tag: "b10901", commit: "a".repeat(40), archiveSha256: digest("archive") },
     patchSha256: digest("patch"),
     toolchain: { cmake: "cmake", compiler: "clang" },
     cmakeFlags: ["-DTEST=ON"],
     model: { fileName: "granite-q4_0.gguf", bytes: 1, sha256: digest("model") },
-    files: [{ path: "llama-server", bytes: Buffer.byteLength(contents), sha256: digest(contents) }],
+    files: [{ path: executableName, bytes: Buffer.byteLength(contents), sha256: digest(contents) }],
     licenses: [],
-    dynamicDependencies: ["/usr/lib/libSystem.B.dylib"],
+    dynamicDependencies: windows ? ["KERNEL32.dll"] : ["/usr/lib/libSystem.B.dylib"],
   };
 }
 
 async function writeArtifact(directory: string, contents: string): Promise<NativeArtifactManifest> {
   const manifest = fixture(contents);
   await mkdir(directory, { recursive: true });
-  await writeFile(join(directory, "llama-server"), contents);
-  await chmod(join(directory, "llama-server"), 0o755);
+  await writeFile(join(directory, executableName), contents);
+  if (!windows) await chmod(join(directory, executableName), 0o755);
   await writeFile(join(directory, "manifest.json"), `${JSON.stringify(manifest)}\n`);
   return manifest;
 }
@@ -88,7 +91,7 @@ test("native build cache builds once then materializes a verified artifact for a
 
     expect(builds).toBe(1);
     expect(second).toEqual(first);
-    expect(await readFile(join(secondCandidate, "llama-server"), "utf8")).toBe("first build");
+    expect(await readFile(join(secondCandidate, executableName), "utf8")).toBe("first build");
     expect(reports.some((message) => message.includes("cache miss"))).toBe(true);
     expect(reports.some((message) => message.includes("cache hit"))).toBe(true);
   });
@@ -104,14 +107,14 @@ test("native build cache discards a corrupted entry and rebuilds it", async () =
     };
     await materializeNativeBuildCache(cacheOptions(cacheRoot, join(root, "first"), build));
     const entry = nativeBuildCacheEntryDirectory(cacheRoot, target, cacheKey);
-    await writeFile(join(entry, "llama-server"), "corrupted");
+    await writeFile(join(entry, executableName), "corrupted");
 
     const rebuilt = await materializeNativeBuildCache(
       cacheOptions(cacheRoot, join(root, "second"), build),
     );
 
     expect(builds).toBe(2);
-    expect(await readFile(join(root, "second", "llama-server"), "utf8")).toBe("build 2");
+    expect(await readFile(join(root, "second", executableName), "utf8")).toBe("build 2");
     expect(rebuilt.buildIdentity).toBe(fixture("build 2").buildIdentity);
   });
 });
@@ -132,7 +135,7 @@ test("concurrent worktrees wait for one native cache build", async () => {
 
     expect(builds).toBe(1);
     expect(first.buildIdentity).toBe(second.buildIdentity);
-    expect(await readFile(join(root, "first", "llama-server"), "utf8")).toBe("shared build");
-    expect(await readFile(join(root, "second", "llama-server"), "utf8")).toBe("shared build");
+    expect(await readFile(join(root, "first", executableName), "utf8")).toBe("shared build");
+    expect(await readFile(join(root, "second", executableName), "utf8")).toBe("shared build");
   });
 });

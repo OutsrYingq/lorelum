@@ -17,7 +17,8 @@ const GIT_ENVIRONMENT = Object.freeze({
   TMP: process.env.TMP,
   TMPDIR: process.env.TMPDIR,
   GIT_ASKPASS: "",
-  GIT_CONFIG_GLOBAL: devNull,
+  // os.devNull is the MSYS path on Windows where git cannot open the config.
+  GIT_CONFIG_GLOBAL: process.platform === "win32" ? "nul" : devNull,
   GIT_CONFIG_NOSYSTEM: "1",
   GIT_TERMINAL_PROMPT: "0",
 });
