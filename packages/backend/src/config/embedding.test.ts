@@ -7,7 +7,6 @@ test("missing embedding config is allowed", () => {
   const exampleHome = process.platform === "win32" ? "C:\\home\\example" : "/home/example";
   expect(resolveEmbeddingConfig(undefined, exampleHome)).toMatchObject({
     threads: 4,
-    maxTokens: 512,
     cacheDirectory: join(exampleHome, ".lorelum", "models"),
     download: { enabled: true, url: DEFAULT_MODEL_DOWNLOAD_URL },
   });
@@ -28,21 +27,19 @@ test("embedding snapshot uses a UTF-8 serialized byte limit", () => {
   expect(() => resolveEmbeddingConfig({ modelPath: `/${"模型".repeat(1_000)}` })).toThrow();
 });
 
-test("runtime tuning is bounded and download has no overall timeout option", () => {
+test("thread tuning is bounded and download has no overall timeout option", () => {
   const config = resolveEmbeddingConfig({
     threads: 8,
-    maxTokens: 2048,
     download: { enabled: false, stallTimeoutSeconds: 120 },
   });
   expect(config).toMatchObject({
     threads: 8,
-    maxTokens: 2048,
     download: { enabled: false, stallTimeoutSeconds: 120, maxAttempts: 3 },
   });
   expect(Object.isFrozen(config.download)).toBe(true);
   for (const value of [
     { threads: 0 },
-    { maxTokens: 32768 },
+    { contextTokens: 2048 },
     { dimensions: 768 },
     { download: { timeoutMs: 1000 } },
     { download: { maxAttempts: 0 } },

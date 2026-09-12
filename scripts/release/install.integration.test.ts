@@ -5,14 +5,18 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const version = "0.1.0";
-const target = "darwin-arm64";
-const archiveName = `lore-${version}-${target}.tar.gz`;
-const packageName = archiveName.slice(0, -".tar.gz".length);
 const repositoryRoot = join(import.meta.dir, "..", "..");
+
 // The POSIX installer runs under Git Bash on Windows hosts, where MSYS shasum emits
 // a leading mode marker that its parsing does not accept; Windows installs use
 // install.ps1 instead, which install-ps1.integration.test.ts covers.
 const posixOnly = process.platform !== "win32";
+
+const platforms = {
+  "darwin-arm64": { unameS: "Darwin", unameM: "arm64" },
+  "linux-x64": { unameS: "Linux", unameM: "x86_64" },
+} as const;
+type InstallerPlatform = keyof typeof platforms;
 
 test.skipIf(!posixOnly)(
   "installer verifies, extracts, and atomically links one platform package",
@@ -37,6 +41,26 @@ test.skipIf(!posixOnly)(
     }
   },
 );
+
+test.skipIf(!posixOnly)("installer installs the linux-x64 package on Linux x86_64", async () => {
+  const root = await mkdtemp(join(tmpdir(), "lore-install-linux-"));
+  const server = await createReleaseServer(root, { platform: "linux-x64" });
+  try {
+    const result = await runInstaller(root, server.url.origin, ["--version", version], "linux-x64");
+    expect(result.exitCode).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(result.stdout).toContain(`Installed lore ${version}`);
+    expect(
+      await readFile(
+        join(root, "share", "versions", version, "native", "linux-x64", "manifest.json"),
+        "utf8",
+      ),
+    ).toBe("{}\n");
+  } finally {
+    server.stop(true);
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 test.skipIf(!posixOnly)(
   "installer resolves the latest stable release when no version is supplied",
@@ -114,27 +138,28 @@ test.skipIf(!posixOnly)("installer leaves an unmanaged command untouched", async
 
 async function createReleaseServer(
   root: string,
-  options: { latestTag?: string; releaseTag?: string } = {},
+  options: { latestTag?: string; releaseTag?: string; platform?: InstallerPlatform } = {},
 ) {
+  const platform = options.platform ?? "darwin-arm64";
+  const archiveName = `lore-${version}-${platform}.tar.gz`;
+  const packageName = archiveName.slice(0, -".tar.gz".length);
   const releaseTag = options.releaseTag ?? `v${version}`;
   const releases = join(root, "releases", releaseTag);
   const packageDirectory = join(root, packageName);
-  await mkdir(join(packageDirectory, "native", target), { recursive: true });
+  await mkdir(join(packageDirectory, "native", platform), { recursive: true });
   await writeFile(join(packageDirectory, "lore"), "#!/bin/sh\nexit 0\n");
   await writeFile(join(packageDirectory, "LICENSE"), "Apache-2.0 fixture\n");
   await writeFile(join(packageDirectory, "THIRD_PARTY_NOTICES.txt"), "notices\n");
-  await writeFile(join(packageDirectory, "native", target, "llama-server"), "#!/bin/sh\nexit 0\n");
-  await writeFile(join(packageDirectory, "native", target, "manifest.json"), "{}\n");
+  await writeFile(
+    join(packageDirectory, "native", platform, "llama-server"),
+    "#!/bin/sh\nexit 0\n",
+  );
+  await writeFile(join(packageDirectory, "native", platform, "manifest.json"), "{}\n");
   await chmod(join(packageDirectory, "lore"), 0o755);
-  await chmod(join(packageDirectory, "native", target, "llama-server"), 0o755);
+  await chmod(join(packageDirectory, "native", platform, "llama-server"), 0o755);
   await mkdir(releases, { recursive: true });
   const archive = join(releases, archiveName);
-  // GNU tar treats "D:\..." as host:path; Windows always archives through System32 bsdtar.
-  const tar =
-    process.platform === "win32"
-      ? join(process.env.SystemRoot ?? "C:\\Windows", "System32", "tar.exe")
-      : "tar";
-  const archived = Bun.spawnSync([tar, "-C", root, "-czf", archive, packageName]);
+  const archived = Bun.spawnSync(["tar", "-C", root, "-czf", archive, packageName]);
   if (archived.exitCode !== 0) throw new Error("fixture archive creation failed");
   const sha256 = createHash("sha256")
     .update(Buffer.from(await Bun.file(archive).arrayBuffer()))
@@ -163,13 +188,15 @@ async function runInstaller(
   root: string,
   releaseBase: string,
   arguments_: readonly string[] = ["--version", version],
+  platform: InstallerPlatform = "darwin-arm64",
 ) {
   const fakeBin = join(root, "fake-bin");
   await mkdir(fakeBin, { recursive: true });
   const uname = join(fakeBin, "uname");
+  const { unameS, unameM } = platforms[platform];
   await writeFile(
     uname,
-    '#!/bin/sh\ncase "$1" in\n  -s) echo Darwin ;;\n  -m) echo arm64 ;;\nesac\n',
+    `#!/bin/sh\ncase "$1" in\n  -s) echo ${unameS} ;;\n  -m) echo ${unameM} ;;\nesac\n`,
   );
   await chmod(uname, 0o755);
   const child = Bun.spawn(["sh", join(repositoryRoot, "install.sh"), ...arguments_], {
