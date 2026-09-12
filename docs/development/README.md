@@ -103,9 +103,9 @@ Embedding source checks need one native candidate in the current worktree:
 bun run build:native
 ```
 
-The candidate is copied to `packages/backend/.artifacts/native/embedding/darwin-arm64/`. The completed native runtime is shared only as a developer build cache, currently `~/Library/Caches/Lorelum/native/v1` on macOS. A matching second worktree verifies and copies that runtime instead of running CMake again. The cache does not belong to `~/.lorelum`, is not selected by `config.yaml`, and is never used as the backend runtime path; removing it merely makes the next `build:native` rebuild the candidate.
+The candidate is copied to `packages/backend/.artifacts/native/embedding/<target>/` (`darwin-arm64` on macOS, `linux-x64` on Linux). The completed native runtime is shared only as a developer build cache: `~/Library/Caches/Lorelum/native/v1` on macOS, `$XDG_CACHE_HOME/lorelum/native/v1` (or `~/.cache/lorelum/native/v1`) on Linux. A matching second worktree verifies and copies that runtime instead of running CMake again. The cache does not belong to `~/.lorelum`, is not selected by `config.yaml`, and is never used as the backend runtime path; removing it merely makes the next `build:native` rebuild the candidate.
 
-This remains a macOS arm64 CPU build. The source archive, pinned CMake download, and CMake intermediate files remain in the invoking worktree's ignored `.cache/native-build/` and are only needed on a cache miss. See the [native build guide](../../native/embedding/README.md) for lifecycle checks and the release/source trust boundary.
+This remains a CPU-only build. macOS uses the pinned CMake download and an ARMv8.4 baseline; Linux uses the distribution CMake/toolchain and the generic x86-64 baseline (no AVX2/AVX-512 requirement, OpenMP disabled). The source archive, any pinned CMake download, and CMake intermediate files remain in the invoking worktree's ignored `.cache/native-build/` and are only needed on a cache miss. See the [native build guide](../../native/embedding/README.md) for lifecycle checks and the release/source trust boundary.
 
 ### Store isolation rules
 

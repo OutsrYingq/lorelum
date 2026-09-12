@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { resolveCompiledEmbeddingResourceRoot, verifyResource } from "./embedding-resources";
@@ -40,6 +40,10 @@ test("resource verification rejects wrong content and detects replacement after 
       verifyResource(path, 7, "0".repeat(64), AbortSignal.timeout(1000)),
     ).rejects.toMatchObject({ code: "embedding.resource-invalid" });
     await writeFile(path, "changed");
+    // Pin a distinct mtime instead of waiting out the kernel's coarse (jiffy) timestamp
+    // granularity on Linux: the verifier must reject any change to the tracked stat fields.
+    const pinned = new Date(Date.now() - 60_000);
+    await utimes(path, pinned, pinned);
     await expect(unchanged()).rejects.toMatchObject({ code: "embedding.resource-invalid" });
     await rm(path);
     const target = join(directory, "target");

@@ -7,6 +7,12 @@ import type { ProcessIdentity } from "../../src/runtime/process-identity";
 import { createEmbeddingProcess } from "../../src/runtime/embedding-process";
 import type { ResolvedEmbeddingConfig } from "../../src/config/embedding";
 
+/**
+ * Baseline CPU targets encode full batches sequentially and can exceed the 5 s product
+ * default for one request; the harness observes throughput instead of gating machine speed.
+ */
+export const HARNESS_ENCODE_BUDGET_MS = 60_000;
+
 export function modelPathFromArgs(): string {
   const path = process.argv[2];
   assert(path, "Provide the fixed Q4_0 model path as the first argument");
@@ -29,7 +35,11 @@ export function createNativeFixture(
     ...(options.maxTokens === undefined ? {} : { maxTokens: options.maxTokens }),
   };
   const service = createEmbeddingService({
-    settings: { ...DEFAULT_BACKEND_SETTINGS, startupTimeoutMs: 15_000 },
+    settings: {
+      ...DEFAULT_BACKEND_SETTINGS,
+      startupTimeoutMs: 15_000,
+      requestTimeoutMs: HARNESS_ENCODE_BUDGET_MS,
+    },
     ...runtimeSettings,
     createRuntime() {
       const native = createEmbeddingProcess({ modelPath, ...runtimeSettings }, async (identity) => {

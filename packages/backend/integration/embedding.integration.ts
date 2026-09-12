@@ -5,7 +5,12 @@ import { createBackendApp } from "../src/app";
 import { createBackendClient } from "../src/client/client";
 import { createBackendService } from "../src/modules/backend/service";
 import { PROTOCOL_VERSION } from "../src/protocol/constants";
-import { assertUnitVector, createNativeFixture, modelPathFromArgs } from "./support/native";
+import {
+  assertUnitVector,
+  createNativeFixture,
+  HARNESS_ENCODE_BUDGET_MS,
+  modelPathFromArgs,
+} from "./support/native";
 import { readRssMiB, waitUntil } from "./support/process";
 import { verifyReferences } from "./support/reference";
 
@@ -40,6 +45,7 @@ try {
     secret,
     buildIdentity: identity.buildIdentity,
     baseUrl: `http://127.0.0.1:${app.server.port}`,
+    timeoutMs: HARNESS_ENCODE_BUDGET_MS,
   });
   assert.equal((await client.statusModel()).state, "unloaded");
   const started = performance.now();

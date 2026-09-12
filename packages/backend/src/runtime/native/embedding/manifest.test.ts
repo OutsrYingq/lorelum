@@ -98,3 +98,35 @@ test("native artifact verification checks declared bytes, digests, mode and depe
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("linux artifacts validate against the linux system soname allowlist only", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "lore-release-native-linux-"));
+  const contents = "native";
+  try {
+    const manifest: NativeArtifactManifest = {
+      ...fixture(contents),
+      platform: "linux",
+      arch: "x64",
+      dynamicDependencies: ["libc.so.6", "libstdc++.so.6"],
+    };
+    await writeFile(join(directory, "llama-server"), contents);
+    await chmod(join(directory, "llama-server"), 0o755);
+    await writeFile(join(directory, "manifest.json"), JSON.stringify(manifest));
+    await expect(verifyNativeArtifact(directory)).resolves.toEqual(manifest);
+
+    await writeFile(
+      join(directory, "manifest.json"),
+      JSON.stringify({ ...manifest, dynamicDependencies: ["/usr/lib/libSystem.B.dylib"] }),
+    );
+    // A darwin system path is not part of the linux allowlist.
+    await expect(verifyNativeArtifact(directory)).rejects.toThrow("unsupported dynamic dependency");
+    // Neither is an unexpected native library.
+    await writeFile(
+      join(directory, "manifest.json"),
+      JSON.stringify({ ...manifest, dynamicDependencies: ["libcrypto.so.3"] }),
+    );
+    await expect(verifyNativeArtifact(directory)).rejects.toThrow("unsupported dynamic dependency");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
