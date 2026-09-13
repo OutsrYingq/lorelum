@@ -75,57 +75,114 @@ test("source native artifact match permits local compiler bytes but not a differ
   ).toThrow("current source recipe");
 });
 
-test("native artifact verification checks declared bytes, digests, mode and dependencies", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "lore-release-native-"));
-  const contents = "native";
-  try {
-    const manifest = fixture(contents);
-    await writeFile(join(directory, "llama-server"), contents);
-    await chmod(join(directory, "llama-server"), 0o755);
-    await writeFile(join(directory, "manifest.json"), JSON.stringify(manifest));
-    await expect(verifyNativeArtifact(directory)).resolves.toEqual(manifest);
+test.skipIf(process.platform === "win32")(
+  "native artifact verification checks declared bytes, digests, mode and dependencies",
+  async () => {
+    const directory = await mkdtemp(join(tmpdir(), "lore-release-native-"));
+    const contents = "native";
+    try {
+      const manifest = fixture(contents);
+      await writeFile(join(directory, "llama-server"), contents);
+      await chmod(join(directory, "llama-server"), 0o755);
+      await writeFile(join(directory, "manifest.json"), JSON.stringify(manifest));
+      await expect(verifyNativeArtifact(directory)).resolves.toEqual(manifest);
 
-    await writeFile(join(directory, "unexpected"), "unexpected");
-    await expect(verifyNativeArtifact(directory)).rejects.toThrow("unexpected files");
-    await rm(join(directory, "unexpected"));
+      await writeFile(join(directory, "unexpected"), "unexpected");
+      await expect(verifyNativeArtifact(directory)).rejects.toThrow("unexpected files");
+      await rm(join(directory, "unexpected"));
 
-    await writeFile(
-      join(directory, "manifest.json"),
-      JSON.stringify({ ...manifest, dynamicDependencies: ["/opt/local/lib/libunexpected.dylib"] }),
-    );
-    await expect(verifyNativeArtifact(directory)).rejects.toThrow("unsupported dynamic dependency");
-  } finally {
-    await rm(directory, { recursive: true, force: true });
-  }
-});
+      await writeFile(
+        join(directory, "manifest.json"),
+        JSON.stringify({
+          ...manifest,
+          dynamicDependencies: ["/opt/local/lib/libunexpected.dylib"],
+        }),
+      );
+      await expect(verifyNativeArtifact(directory)).rejects.toThrow(
+        "unsupported dynamic dependency",
+      );
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  },
+);
 
-test("linux artifacts validate against the linux system soname allowlist only", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "lore-release-native-linux-"));
+test.skipIf(process.platform === "win32")(
+  "linux artifacts validate against the linux system soname allowlist only",
+  async () => {
+    const directory = await mkdtemp(join(tmpdir(), "lore-release-native-linux-"));
+    const contents = "native";
+    try {
+      const manifest: NativeArtifactManifest = {
+        ...fixture(contents),
+        platform: "linux",
+        arch: "x64",
+        dynamicDependencies: ["libc.so.6", "libstdc++.so.6"],
+      };
+      await writeFile(join(directory, "llama-server"), contents);
+      await chmod(join(directory, "llama-server"), 0o755);
+      await writeFile(join(directory, "manifest.json"), JSON.stringify(manifest));
+      await expect(verifyNativeArtifact(directory)).resolves.toEqual(manifest);
+
+      await writeFile(
+        join(directory, "manifest.json"),
+        JSON.stringify({ ...manifest, dynamicDependencies: ["/usr/lib/libSystem.B.dylib"] }),
+      );
+      // A darwin system path is not part of the linux allowlist.
+      await expect(verifyNativeArtifact(directory)).rejects.toThrow(
+        "unsupported dynamic dependency",
+      );
+      // Neither is an unexpected native library.
+      await writeFile(
+        join(directory, "manifest.json"),
+        JSON.stringify({ ...manifest, dynamicDependencies: ["libcrypto.so.3"] }),
+      );
+      await expect(verifyNativeArtifact(directory)).rejects.toThrow(
+        "unsupported dynamic dependency",
+      );
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  },
+);
+
+test("win32 artifacts validate against the Windows system DLL allowlist only", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "lore-release-native-win32-"));
   const contents = "native";
   try {
     const manifest: NativeArtifactManifest = {
       ...fixture(contents),
-      platform: "linux",
+      platform: "win32",
       arch: "x64",
-      dynamicDependencies: ["libc.so.6", "libstdc++.so.6"],
+      executable: "llama-server.exe",
+      files: [
+        { path: "llama-server.exe", bytes: Buffer.byteLength(contents), sha256: digest(contents) },
+      ],
+      dynamicDependencies: ["KERNEL32.dll", "ws2_32.dll"],
     };
-    await writeFile(join(directory, "llama-server"), contents);
-    await chmod(join(directory, "llama-server"), 0o755);
+    await writeFile(join(directory, "llama-server.exe"), contents);
     await writeFile(join(directory, "manifest.json"), JSON.stringify(manifest));
+    // Windows gates on the executable extension; POSIX mode bits never apply.
     await expect(verifyNativeArtifact(directory)).resolves.toEqual(manifest);
 
     await writeFile(
       join(directory, "manifest.json"),
-      JSON.stringify({ ...manifest, dynamicDependencies: ["/usr/lib/libSystem.B.dylib"] }),
+      JSON.stringify({ ...manifest, dynamicDependencies: ["libstdc++-6.dll"] }),
     );
-    // A darwin system path is not part of the linux allowlist.
+    // A bundled MinGW runtime DLL is not part of the Windows system allowlist.
     await expect(verifyNativeArtifact(directory)).rejects.toThrow("unsupported dynamic dependency");
-    // Neither is an unexpected native library.
+
     await writeFile(
       join(directory, "manifest.json"),
-      JSON.stringify({ ...manifest, dynamicDependencies: ["libcrypto.so.3"] }),
+      JSON.stringify({ ...manifest, dynamicDependencies: ["KERNEL32.dll", "WS2_32.dll"] }),
     );
-    await expect(verifyNativeArtifact(directory)).rejects.toThrow("unsupported dynamic dependency");
+    // DLL names are compared case-insensitively.
+    await expect(verifyNativeArtifact(directory)).resolves.toEqual(
+      parseNativeArtifactManifest({
+        ...manifest,
+        dynamicDependencies: ["KERNEL32.dll", "WS2_32.dll"],
+      }),
+    );
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

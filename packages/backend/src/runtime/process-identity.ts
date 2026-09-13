@@ -9,6 +9,12 @@ export interface ProcessIdentity {
 }
 
 export async function processIdentity(pid: number): Promise<ProcessIdentity | undefined> {
+  if (process.platform === "win32") {
+    // Loaded lazily so POSIX hosts never resolve kernel32.
+    const { windowsProcessStartTime } = await import("./windows-process");
+    const startedAt = windowsProcessStartTime(pid);
+    return startedAt === undefined ? undefined : { pid, startedAt };
+  }
   try {
     process.kill(pid, 0);
   } catch (error) {

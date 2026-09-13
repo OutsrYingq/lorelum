@@ -23,7 +23,7 @@ test("embedding artifact catalog owns the development, installed, and trusted-ma
 });
 
 test("embedding artifact catalog rejects an unsupported platform instead of selecting another target", () => {
-  expect(resolveEmbeddingNativeArtifact("win32", "x64")).toBeUndefined();
+  expect(resolveEmbeddingNativeArtifact("freebsd", "x64")).toBeUndefined();
 });
 
 test("embedding artifact catalog owns the linux-x64 development, installed, and trusted-manifest paths", () => {
@@ -40,4 +40,22 @@ test("embedding artifact catalog owns the linux-x64 development, installed, and 
     join("/release", "native", artifact.id),
   );
   expect(trustedEmbeddingManifestPath(artifact)).toBe(join(import.meta.dir, "linux-x64.json"));
+});
+
+test("embedding artifact catalog owns the win32-x64 development, installed, and trusted-manifest paths", () => {
+  const artifact = resolveEmbeddingNativeArtifact("win32", "x64");
+  expect(artifact).toBeDefined();
+  if (artifact === undefined) throw new Error("win32-x64 artifact is required");
+
+  expect(artifact.id).toBe("win32-x64");
+  expect(artifact.compileTarget).toBe("bun-windows-x64");
+  expect(artifact.manifest.executable).toBe("llama-server.exe");
+  expect(artifact.manifest.platform).toBe("win32");
+  expect(developmentEmbeddingArtifactDirectory(artifact)).toBe(
+    resolve(import.meta.dir, "../../../..", ".artifacts", "native", "embedding", artifact.id),
+  );
+  expect(installedEmbeddingArtifactDirectory("/release", artifact)).toBe(
+    join("/release", "native", artifact.id),
+  );
+  expect(trustedEmbeddingManifestPath(artifact)).toBe(join(import.meta.dir, "win32-x64.json"));
 });

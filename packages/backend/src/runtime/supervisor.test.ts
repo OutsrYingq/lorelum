@@ -3,6 +3,7 @@ import { expect, test } from "bun:test";
 import { mkdtemp, realpath, rm, stat, readFile, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { createBackendSupervisor } from "./supervisor";
 import { readRecord } from "./runtime-state";
 import { isSameProcess } from "./process-identity";
@@ -17,7 +18,7 @@ async function fixture(
   await listener.stop(true);
   const command = [
     process.execPath,
-    new URL("../../integration/daemon.ts", import.meta.url).pathname,
+    fileURLToPath(new URL("../../integration/daemon.ts", import.meta.url)),
   ];
   try {
     await run(directory, port, command);
@@ -32,7 +33,20 @@ async function fixture(
       });
       await controller.stop();
     }
-    await rm(temporary, { recursive: true, force: true });
+    await removeTemporarily(temporary);
+  }
+}
+
+/** Windows releases directory handles asynchronously; bounded retries avoid EBUSY flakes. */
+async function removeTemporarily(directory: string): Promise<void> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await rm(directory, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      if (attempt >= 10 || !((error as NodeJS.ErrnoException).code === "EBUSY")) throw error;
+      await Bun.sleep(50);
+    }
   }
 }
 
@@ -65,8 +79,11 @@ test(
       expect(results[0]?.state).toBe("ready");
       const record = (await readRecord(directory))!;
       expect(record.pid).not.toBe(process.pid);
-      expect((await stat(directory)).mode & 0o777).toBe(0o700);
-      expect((await stat(join(directory, "instance.json"))).mode & 0o777).toBe(0o600);
+      // Directory and record permission bits only exist on POSIX.
+      if (process.platform !== "win32") {
+        expect((await stat(directory)).mode & 0o777).toBe(0o700);
+        expect((await stat(join(directory, "instance.json"))).mode & 0o777).toBe(0o600);
+      }
       const mismatched = createBackendSupervisor({ ...options, buildIdentity: "different-build" });
       await expect(mismatched.status()).rejects.toMatchObject({ code: "backend.incompatible" });
       await expect(mismatched.start()).rejects.toMatchObject({ code: "backend.incompatible" });
@@ -161,7 +178,12 @@ test(
   async () =>
     fixture(async (directory, port, command) => {
       await mkdir(directory, { mode: 0o700 });
-      await writeFile(join(directory, "backend.log"), "invalid-permissions", { mode: 0o644 });
+      if (process.platform === "win32") {
+        // No mode bits to violate on Windows; an unusable log path fails after bind instead.
+        await mkdir(join(directory, "backend.log"));
+      } else {
+        await writeFile(join(directory, "backend.log"), "invalid-permissions", { mode: 0o644 });
+      }
       const controller = createBackendSupervisor({
         buildIdentity: "integration-build",
         command,

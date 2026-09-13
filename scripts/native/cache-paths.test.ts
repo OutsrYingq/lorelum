@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { win32 } from "node:path";
+import { join, win32 } from "node:path";
 import {
   nativeBuildCacheEntryDirectory,
   nativeBuildCacheKey,
@@ -47,6 +47,6 @@ test("native cache key changes with recipe and toolchain inputs but never worktr
   expect(nativeBuildCacheKey({ ...input })).toBe(first);
   expect(nativeBuildCacheKey({ ...input, compiler: "Apple clang 18" })).not.toBe(first);
   expect(nativeBuildCacheEntryDirectory("/cache", input.target, first)).toBe(
-    `/cache/darwin-arm64/${first}`,
+    join("/cache", "darwin-arm64", first),
   );
 });

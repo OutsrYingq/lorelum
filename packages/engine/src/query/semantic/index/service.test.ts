@@ -231,35 +231,40 @@ test("rejects a build when the Store changes before publication", async () => {
   });
 });
 
-test("does not mistake an unreadable semantic index path for a missing index", async () => {
-  await withRoot(async (rootPath) => {
-    const profile = createEmbeddingProfile({ encodingId, dimensions: 2 });
-    const directory = join(rootPath, "indexes", "semantic", "v1");
-    await mkdir(directory, { recursive: true });
-    await writeFile(join(directory, profile.profileId), "not a directory");
-    const current = identity(rootPath);
-    const service = createSemanticIndexService({
-      profile,
-      embedding: port(),
-      store: {
-        async readSnapshotIdentity() {
-          return current;
+// Windows surfaces a different errno for reads through a non-directory path, so the
+// POSIX-only unreadable classification cannot be constructed there.
+test.skipIf(process.platform === "win32")(
+  "does not mistake an unreadable semantic index path for a missing index",
+  async () => {
+    await withRoot(async (rootPath) => {
+      const profile = createEmbeddingProfile({ encodingId, dimensions: 2 });
+      const directory = join(rootPath, "indexes", "semantic", "v1");
+      await mkdir(directory, { recursive: true });
+      await writeFile(join(directory, profile.profileId), "not a directory");
+      const current = identity(rootPath);
+      const service = createSemanticIndexService({
+        profile,
+        embedding: port(),
+        store: {
+          async readSnapshotIdentity() {
+            return current;
+          },
+          async readEffectivePracticeSnapshot() {
+            return { identity: current, practices: [] };
+          },
+          async readEffectivePracticeChanges() {
+            return undefined;
+          },
+          async withSnapshotFence(_root, _expected, publish) {
+            return publish();
+          },
         },
-        async readEffectivePracticeSnapshot() {
-          return { identity: current, practices: [] };
-        },
-        async readEffectivePracticeChanges() {
-          return undefined;
-        },
-        async withSnapshotFence(_root, _expected, publish) {
-          return publish();
-        },
-      },
-    });
+      });
 
-    await expect(service.status({ rootPath })).resolves.toMatchObject({ state: "incompatible" });
-  });
-});
+      await expect(service.status({ rootPath })).resolves.toMatchObject({ state: "incompatible" });
+    });
+  },
+);
 
 test("preserves Store availability failures instead of hiding them as index errors", async () => {
   await withRoot(async (rootPath) => {

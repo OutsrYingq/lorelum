@@ -32,6 +32,22 @@ async function fixture(): Promise<string> {
 
 const registry = snapshotCommandDefinitions(createLocalizationCommands());
 
+/** File symlinks need Developer Mode or elevation on Windows; probe once instead of assuming. */
+async function canCreateSymlinks(): Promise<boolean> {
+  if (process.platform !== "win32") return true;
+  const directory = await mkdtemp(join(tmpdir(), "lorelum-symlink-probe-"));
+  try {
+    const target = join(directory, "target");
+    await writeFile(target, "fixture");
+    await symlink(target, join(directory, "link"));
+    return true;
+  } catch {
+    return false;
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+}
+
 test("sync creates a manifest without requiring manual digests", async () => {
   const root = await fixture();
   try {
@@ -165,13 +181,15 @@ test("rejects mutually exclusive sync selectors and unsafe localized sources", a
     ).toBe(2);
     expect(JSON.parse(both.value).error.code).toBe("usage.invalid");
     await rm(join(root, "i18n", "zh-CN", "practices", "requirements", "goal.md"));
-    await symlink(
-      join(root, "practices", "requirements", "goal.md"),
-      join(root, "i18n", "zh-CN", "practices", "requirements", "goal.md"),
-    );
-    const unsafe = new MemoryWriter();
-    expect(await run(["format", root], { registry, stdout: unsafe })).toBe(2);
-    expect(JSON.parse(unsafe.value).error.code).toBe("localization.invalid");
+    if (await canCreateSymlinks()) {
+      await symlink(
+        join(root, "practices", "requirements", "goal.md"),
+        join(root, "i18n", "zh-CN", "practices", "requirements", "goal.md"),
+      );
+      const unsafe = new MemoryWriter();
+      expect(await run(["format", root], { registry, stdout: unsafe })).toBe(2);
+      expect(JSON.parse(unsafe.value).error.code).toBe("localization.invalid");
+    }
   } finally {
     await rm(root, { recursive: true, force: true });
   }

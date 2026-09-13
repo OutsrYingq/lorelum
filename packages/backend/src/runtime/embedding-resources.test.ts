@@ -5,7 +5,24 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { resolveCompiledEmbeddingResourceRoot, verifyResource } from "./embedding-resources";
 
+/** File symlinks need Developer Mode or elevation on Windows; probe once instead of assuming. */
+async function canCreateSymlinks(): Promise<boolean> {
+  if (process.platform !== "win32") return true;
+  const directory = await mkdtemp(join(tmpdir(), "lore-symlink-probe-"));
+  try {
+    const target = join(directory, "target");
+    await writeFile(target, "fixture");
+    await symlink(target, join(directory, "link"));
+    return true;
+  } catch {
+    return false;
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+}
+
 test("compiled resource lookup resolves the executable symlink before finding native files", async () => {
+  const withSymlinks = await canCreateSymlinks();
   const directory = await mkdtemp(join(tmpdir(), "lore-resource-root-"));
   try {
     const installed = join(directory, "installed");
@@ -15,6 +32,7 @@ test("compiled resource lookup resolves the executable symlink before finding na
     const executable = join(installed, "lore");
     const link = join(bin, "lore");
     await writeFile(executable, "fixture");
+    if (!withSymlinks) return; // The release path under test cannot be constructed here.
     await symlink(executable, link);
 
     await expect(resolveCompiledEmbeddingResourceRoot(link)).resolves.toBe(
@@ -46,6 +64,8 @@ test("resource verification rejects wrong content and detects replacement after 
     await utimes(path, pinned, pinned);
     await expect(unchanged()).rejects.toMatchObject({ code: "embedding.resource-invalid" });
     await rm(path);
+    const withSymlinks = await canCreateSymlinks();
+    if (!withSymlinks) return; // The swap-after-delete step cannot be constructed here.
     const target = join(directory, "target");
     await writeFile(target, "fixture");
     await symlink(target, path);

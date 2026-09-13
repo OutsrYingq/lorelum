@@ -6,7 +6,7 @@ The server's standard input is a parent-liveness pipe. Its independent watcher s
 
 The `stalled-main` probe needs the patched llama.cpp source and prepares it in the invoking worktree's `.cache/native-build/` when necessary. It does not rebuild `llama-server` or alter the shared completed-runtime cache.
 
-Build and validate the host's CPU artifact (macOS arm64, Linux x64):
+Build and validate the host's CPU artifact (macOS arm64, Linux x64, Windows x64):
 
 ```sh
 bun run build:native
@@ -16,6 +16,8 @@ bun scripts/native/test-parent-liveness.ts --mode stalled-main
 ```
 
 Linux builds use the distribution's `cmake` and `c++` (no pinned CMake download); the cache key fingerprints the system CMake, compiler, and glibc versions in place of the macOS SDK. The recipe disables OpenMP so the binary links only the system runtime (`libc`, `libstdc++`, `libm`, `libgcc_s`) and stays portable across distributions with a compatible glibc.
+
+Windows builds download the pinned CMake win64 zip and the pinned WinLibs MinGW-w64 GCC (UCRT, x86_64-posix-seh) into this worktree's `.cache/native-build/tools/`; no system install or PATH change is required. Extraction and patching run through `System32\tar.exe` (bsdtar) and `git apply` because GNU tar treats `D:\...` as `host:path` and Windows has no `patch`. The recipe keeps the Linux-style generic x64 CPU baseline (no AVX2/AVX-512), adds `-D_WIN32_WINNT=0x0A00` for cpp-httplib's `CreateFile2`, and links `-static` so `llama-server.exe` depends only on system DLLs (`kernel32`, `ws2_32`, `advapi32`, `shell32`, and the UCRT API sets). The cache key fingerprints the pinned toolchain digests plus the Windows build number.
 
 `build:native` keeps downloaded source, CMake, and CMake intermediates in this worktree's ignored `.cache/native-build/`. Its completed runtime is shared through the operating system cache: on macOS, `~/Library/Caches/Lorelum/native/v1`; on Linux, `$XDG_CACHE_HOME/lorelum/native/v1` or `~/.cache/lorelum/native/v1`; on Windows, `%LOCALAPPDATA%\Lorelum\Cache\native\v1`. The first matching build creates a verified cache entry. A later worktree with the same recipe and compiler/SDK fingerprint copies that entry into its own `.artifacts` candidate without downloading or starting CMake. Delete the system cache root to force a rebuild.
 

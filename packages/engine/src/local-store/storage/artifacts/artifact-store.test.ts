@@ -33,31 +33,37 @@ test("artifact digest is stable across file creation order and reacts to raw byt
   });
 });
 
-test("artifact digest handles 20,000 sibling files without recursive stack growth", async () => {
-  await withDirectory(async (root) => {
-    const snapshot = join(root, "large");
-    await mkdir(snapshot);
-    const names = Array.from(
-      { length: 20_000 },
-      (_, index) => `file-${index.toString().padStart(5, "0")}.txt`,
-    );
-    const batchSize = 500;
-    for (let offset = names.length - batchSize; offset >= 0; offset -= batchSize) {
-      const batch = names.slice(offset, offset + batchSize);
-      // eslint-disable-next-line no-await-in-loop -- bounded batches avoid unbounded pending writes
-      await Promise.all(batch.map((name) => writeFile(join(snapshot, name), name)));
-    }
+test(
+  "artifact digest handles 20,000 sibling files without recursive stack growth",
+  async () => {
+    await withDirectory(async (root) => {
+      const snapshot = join(root, "large");
+      await mkdir(snapshot);
+      const names = Array.from(
+        { length: 20_000 },
+        (_, index) => `file-${index.toString().padStart(5, "0")}.txt`,
+      );
+      const batchSize = 500;
+      for (let offset = names.length - batchSize; offset >= 0; offset -= batchSize) {
+        const batch = names.slice(offset, offset + batchSize);
+        // eslint-disable-next-line no-await-in-loop -- bounded batches avoid unbounded pending writes
+        await Promise.all(batch.map((name) => writeFile(join(snapshot, name), name)));
+      }
 
-    const expected = createHash("sha256");
-    for (const name of names) {
-      expected.update(name, "utf8");
-      expected.update(Buffer.from([0]));
-      expected.update(name, "utf8");
-      expected.update(Buffer.from([10]));
-    }
-    expect(await calculateArtifactDigest(snapshot)).toBe(expected.digest("hex"));
-  });
-}, 30_000);
+      const expected = createHash("sha256");
+      for (const name of names) {
+        expected.update(name, "utf8");
+        expected.update(Buffer.from([0]));
+        expected.update(name, "utf8");
+        expected.update(Buffer.from([10]));
+      }
+      expect(await calculateArtifactDigest(snapshot)).toBe(expected.digest("hex"));
+    });
+    // This bound guards recursive-stack regressions, not machine speed; Windows file
+    // creation under real-time scanners needs a wider budget under parallel suite load.
+  },
+  process.platform === "win32" ? 120_000 : 30_000,
+);
 
 test("promotion verifies an existing artifact before treating it as idempotent", async () => {
   await withDirectory(async (root) => {

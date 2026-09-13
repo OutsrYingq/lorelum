@@ -29,6 +29,7 @@ import {
   nativeBuildWorktreeDirectory,
   patchedLlamaSourceDirectory,
 } from "./source-tree";
+import { win32NativeToolchain } from "./win32-toolchain";
 
 const repositoryRoot = resolve(import.meta.dir, "../..");
 const worktreeBuildRoot = nativeBuildWorktreeDirectory(repositoryRoot);
@@ -38,10 +39,11 @@ const toolRoot = join(worktreeBuildRoot, "tools");
 const artifact = resolveEmbeddingNativeArtifact(process.platform, process.arch);
 if (artifact === undefined) {
   throw new Error(
-    `this validated build recipe currently supports darwin-arm64 and linux-x64, got ${process.platform}-${process.arch}`,
+    `this validated build recipe currently supports darwin-arm64, linux-x64, and win32-x64, got ${process.platform}-${process.arch}`,
   );
 }
 const buildRoot = join(worktreeBuildRoot, `build-${artifact.id}`);
+const executableName = artifact.platform === "win32" ? "llama-server.exe" : "llama-server";
 
 const recipe = targetRecipe(artifact);
 const cmakeFlags = recipe.cmakeFlags.map((flag) =>
@@ -77,11 +79,15 @@ function targetRecipe(target: EmbeddingNativeArtifact): {
     readonly version: string;
     readonly darwinUniversalUrl: string;
     readonly darwinUniversalSha256: string;
+    readonly win64Url?: string;
+    readonly win64Bytes?: number;
+    readonly win64Sha256?: string;
   };
 } {
   if (target.platform === "darwin" && target.id === "darwin-arm64")
     return config.targets["darwin-arm64"];
   if (target.platform === "linux" && target.id === "linux-x64") return config.targets["linux-x64"];
+  if (target.platform === "win32" && target.id === "win32-x64") return config.targets["win32-x64"];
   throw new Error(`unsupported build target ${target.id}`);
 }
 
@@ -89,11 +95,13 @@ function targetRecipe(target: EmbeddingNativeArtifact): {
 interface TargetToolchain {
   readonly cmakeExecutable: string;
   readonly cmakeVersion: string;
-  /** Cache-key input; the pinned archive digest on darwin, empty when using the system CMake. */
+  /** Cache-key input; the pinned archive digest on darwin and win32, empty for system CMake. */
   readonly cmakeArchiveSha256: string;
   readonly compiler: string;
-  /** Cache-key input standing in for the OS runtime ABI: macOS SDK or Linux glibc version. */
+  /** Cache-key input standing in for the OS runtime ABI: macOS SDK, Linux glibc, Windows build. */
   readonly platformFingerprint: string;
+  /** Extra environment for every toolchain child; Windows replaces PATH to keep builds clean. */
+  readonly spawnEnvironment?: Readonly<Record<string, string>>;
   prepare(): Promise<void>;
   dynamicDependencies(executable: string): string[];
 }
@@ -113,6 +121,7 @@ function darwinToolchain(): TargetToolchain {
     cmakeArchiveSha256: pinned.darwinUniversalSha256,
     compiler: run(["xcrun", "clang++", "--version"]).split("\n")[0] ?? "unknown",
     platformFingerprint: run(["xcrun", "--show-sdk-version"]),
+    spawnEnvironment: { GIT_CEILING_DIRECTORIES: repositoryRoot },
     async prepare() {
       mkdirSync(worktreeBuildRoot, { recursive: true });
       mkdirSync(toolRoot, { recursive: true });
@@ -141,6 +150,7 @@ function linuxToolchain(): TargetToolchain {
     compiler: run(["c++", "--version"]).split("\n")[0] ?? "unknown",
     // glibc decides which systems the dynamically linked llama-server can start on.
     platformFingerprint: run(["ldd", "--version"]).split("\n")[0] ?? "unknown",
+    spawnEnvironment: { GIT_CEILING_DIRECTORIES: repositoryRoot },
     async prepare() {
       // Linux builds use the distribution CMake; the version above already gated its presence.
     },
@@ -168,14 +178,49 @@ function linuxToolchain(): TargetToolchain {
   };
 }
 
-const toolchain = artifact.platform === "darwin" ? darwinToolchain() : linuxToolchain();
+const toolchain =
+  artifact.platform === "darwin"
+    ? darwinToolchain()
+    : artifact.platform === "win32"
+      ? win32Toolchain()
+      : linuxToolchain();
+
+function win32Toolchain(): TargetToolchain {
+  const pinned = recipe.cmake;
+  if (pinned === undefined || pinned.win64Sha256 === undefined)
+    throw new Error("win32-x64 recipe must pin its CMake download");
+  const windows = win32NativeToolchain(repositoryRoot);
+  return {
+    cmakeExecutable: windows.cmakeExecutable,
+    cmakeVersion: windows.cmakeIdentity,
+    cmakeArchiveSha256: pinned.win64Sha256,
+    // Identities derive from the pinned archive digests so a cache hit needs no toolchain run.
+    compiler: windows.compilerIdentity,
+    platformFingerprint: windows.windowsVersion,
+    spawnEnvironment: {
+      ...windows.childEnvironment,
+      GIT_CEILING_DIRECTORIES: repositoryRoot,
+    },
+    prepare: () => windows.prepare(),
+    dynamicDependencies: (executable) => windows.dynamicDependencies(executable),
+  };
+}
 
 function sha256File(path: string): string {
   return createHash("sha256").update(readFileSync(path)).digest("hex");
 }
 
-function run(command: readonly string[], cwd = repositoryRoot): string {
-  const result = Bun.spawnSync([...command], { cwd, stdout: "pipe", stderr: "pipe" });
+function run(
+  command: readonly string[],
+  cwd = repositoryRoot,
+  extraEnvironment?: Readonly<Record<string, string>>,
+): string {
+  const result = Bun.spawnSync([...command], {
+    cwd,
+    ...(extraEnvironment === undefined ? {} : { env: { ...process.env, ...extraEnvironment } }),
+    stdout: "pipe",
+    stderr: "pipe",
+  });
   const stdout = result.stdout.toString();
   const stderr = result.stderr.toString();
   if (result.exitCode !== 0)
@@ -192,35 +237,30 @@ function copyArtifact(source: string, destination: string): void {
 
 function buildNativeArtifact(outputRoot: string): NativeArtifactManifest {
   rmSync(buildRoot, { recursive: true, force: true });
+  run([toolchain.cmakeExecutable, "-S", sourceRoot, "-B", buildRoot, ...cmakeFlags], sourceRoot, {
+    GIT_CEILING_DIRECTORIES: repositoryRoot,
+    ...toolchain.spawnEnvironment,
+  });
   run(
     [
-      "/usr/bin/env",
-      `GIT_CEILING_DIRECTORIES=${repositoryRoot}`,
       toolchain.cmakeExecutable,
-      "-S",
-      sourceRoot,
-      "-B",
+      "--build",
       buildRoot,
-      ...cmakeFlags,
+      "--target",
+      "llama-server",
+      "--parallel",
+      "4",
     ],
-    sourceRoot,
+    repositoryRoot,
+    toolchain.spawnEnvironment,
   );
-  run([
-    toolchain.cmakeExecutable,
-    "--build",
-    buildRoot,
-    "--target",
-    "llama-server",
-    "--parallel",
-    "4",
-  ]);
 
-  const builtExecutable = join(buildRoot, "bin/llama-server");
+  const builtExecutable = join(buildRoot, "bin", executableName);
   if (!existsSync(builtExecutable)) throw new Error(`build completed without ${builtExecutable}`);
 
   rmSync(outputRoot, { recursive: true, force: true });
   mkdirSync(outputRoot, { recursive: true });
-  copyArtifact(builtExecutable, join(outputRoot, "llama-server"));
+  copyArtifact(builtExecutable, join(outputRoot, executableName));
   for (const [source, file] of licenses)
     copyFileSync(join(sourceRoot, source), join(outputRoot, file));
   writeFileSync(
@@ -247,7 +287,7 @@ function buildNativeArtifact(outputRoot: string): NativeArtifactManifest {
     model: config.model,
   });
   const licenseFiles = [...licenses.map(([, file]) => file), "THIRD_PARTY_NOTICES.txt"];
-  const files = ["llama-server", ...licenseFiles].map((path) => ({
+  const files = [executableName, ...licenseFiles].map((path) => ({
     path,
     bytes: statSync(join(outputRoot, path)).size,
     sha256: sha256File(join(outputRoot, path)),
@@ -258,7 +298,7 @@ function buildNativeArtifact(outputRoot: string): NativeArtifactManifest {
     recipeIdentity,
     platform: artifact.platform,
     arch: artifact.arch,
-    executable: "llama-server",
+    executable: executableName,
     source: {
       tag: config.source.tag,
       commit: config.source.commit,
@@ -273,7 +313,7 @@ function buildNativeArtifact(outputRoot: string): NativeArtifactManifest {
     model: config.model,
     files,
     licenses: licenseFiles,
-    dynamicDependencies: toolchain.dynamicDependencies(join(outputRoot, "llama-server")),
+    dynamicDependencies: toolchain.dynamicDependencies(join(outputRoot, executableName)),
   };
   writeFileSync(join(outputRoot, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`);
   return manifest;

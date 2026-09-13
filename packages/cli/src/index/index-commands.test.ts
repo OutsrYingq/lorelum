@@ -8,6 +8,8 @@ import {
 } from "@lorelum/backend/protocol";
 import { expect, test } from "bun:test";
 
+import { resolve } from "node:path";
+
 import { run } from "../main";
 import { protocolResponseSchema, type OutputWriter } from "../output/protocol";
 import { validateJsonSchema } from "../output/protocol-schema.test-helper";
@@ -104,7 +106,8 @@ test("index status forwards the selected Store root to the Backend client", asyn
     ["--store-root", "/isolated", "index", "status"],
     client({
       status: async (rootPath) => {
-        expect(rootPath).toBe("/isolated");
+        // The CLI forwards the normalized root; Windows resolves "/isolated" against the drive.
+        expect(rootPath).toBe(resolve("/isolated"));
         return { state: "stale", profileId, vectorCount: 4 };
       },
     }),

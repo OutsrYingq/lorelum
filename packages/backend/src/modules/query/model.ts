@@ -1,10 +1,12 @@
+import { isAbsolute } from "node:path";
 import { z } from "zod";
 
 /** Wire contract for Backend query dispatch; Engine owns text and limit validation. */
 export const queryModeSchema = z.enum(["semantic", "keyword"]);
 export type QueryMode = z.infer<typeof queryModeSchema>;
 export const queryRequestSchema = z.strictObject({
-  storageRoot: z.string().min(1).regex(/^\//),
+  // The store root must be explicit and absolute; the separator convention is the host's.
+  storageRoot: z.string().min(1).refine(isAbsolute, "storageRoot must be an absolute path"),
   query: z.strictObject({
     text: z.string(),
     limit: z.int().optional(),

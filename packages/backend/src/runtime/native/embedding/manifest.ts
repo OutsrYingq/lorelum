@@ -7,12 +7,12 @@ const MAX_MANIFEST_BYTES = 16_384;
 const SHA256 = /^[a-f0-9]{64}$/;
 const FILE_NAME = /^[A-Za-z0-9_.-]+$/;
 
-export type NativeArtifactPlatform = "darwin" | "linux";
+export type NativeArtifactPlatform = "darwin" | "linux" | "win32";
 export type NativeArtifactArch = "arm64" | "x64";
 
 /** Static llama-server builds may only link the operating system's own libraries. */
 export const NATIVE_SYSTEM_DEPENDENCIES: Readonly<
-  Record<"darwin-arm64" | "linux-x64", ReadonlySet<string>>
+  Record<"darwin-arm64" | "linux-x64" | "win32-x64", ReadonlySet<string>>
 > = {
   "darwin-arm64": new Set([
     "/usr/lib/libSystem.B.dylib",
@@ -21,6 +21,27 @@ export const NATIVE_SYSTEM_DEPENDENCIES: Readonly<
   ]),
   // Sonames from ldd on the Ubuntu 24.04 (glibc 2.39) build baseline.
   "linux-x64": new Set(["libc.so.6", "libstdc++.so.6", "libm.so.6", "libgcc_s.so.1"]),
+  // DLL imports from objdump -p on the pinned WinLibs GCC 15.2.0 -static build baseline:
+  // the MinGW runtime is linked statically and UCRT resolves through system API sets.
+  // Windows DLL names are case-insensitive; entries are compared lowercased.
+  "win32-x64": new Set([
+    "advapi32.dll",
+    "kernel32.dll",
+    "shell32.dll",
+    "ws2_32.dll",
+    "api-ms-win-crt-convert-l1-1-0.dll",
+    "api-ms-win-crt-environment-l1-1-0.dll",
+    "api-ms-win-crt-filesystem-l1-1-0.dll",
+    "api-ms-win-crt-heap-l1-1-0.dll",
+    "api-ms-win-crt-locale-l1-1-0.dll",
+    "api-ms-win-crt-math-l1-1-0.dll",
+    "api-ms-win-crt-private-l1-1-0.dll",
+    "api-ms-win-crt-runtime-l1-1-0.dll",
+    "api-ms-win-crt-stdio-l1-1-0.dll",
+    "api-ms-win-crt-string-l1-1-0.dll",
+    "api-ms-win-crt-time-l1-1-0.dll",
+    "api-ms-win-crt-utility-l1-1-0.dll",
+  ]),
 };
 
 export interface NativeArtifactManifest {
@@ -91,16 +112,25 @@ export async function verifyNativeArtifact(directory: string): Promise<NativeArt
   );
   const executable = manifest.files.find((file) => file.path === manifest.executable);
   const executableInfo = await lstat(join(directory, manifest.executable));
-  if (!executable || (executableInfo.mode & 0o111) === 0)
-    throw new Error("native executable is missing execute permissions");
+  // POSIX gates on the execute bit; Windows modes never carry it and gate on the exe extension.
+  const executableUsable =
+    manifest.platform === "win32"
+      ? manifest.executable.endsWith(".exe")
+      : (executableInfo.mode & 0o111) !== 0;
+  if (!executable || !executableUsable)
+    throw new Error("native executable is not usable for this platform");
   const target = `${manifest.platform}-${manifest.arch}`;
-  const allowed =
-    target === "darwin-arm64" || target === "linux-x64"
-      ? NATIVE_SYSTEM_DEPENDENCIES[target]
-      : undefined;
+  // Parsing already rejected combinations without an allowlist entry.
+  const allowed = Object.hasOwn(NATIVE_SYSTEM_DEPENDENCIES, target)
+    ? NATIVE_SYSTEM_DEPENDENCIES[target as keyof typeof NATIVE_SYSTEM_DEPENDENCIES]
+    : undefined;
+  const lowercasedDependencies =
+    manifest.platform === "win32"
+      ? manifest.dynamicDependencies.map((dependency) => dependency.toLowerCase())
+      : [...manifest.dynamicDependencies];
   if (
     allowed === undefined ||
-    manifest.dynamicDependencies.some((dependency) => !allowed.has(dependency))
+    lowercasedDependencies.some((dependency) => !allowed.has(dependency))
   )
     throw new Error("native artifact links an unsupported dynamic dependency");
   return manifest;
@@ -166,7 +196,7 @@ export function parseNativeArtifactManifest(value: unknown): NativeArtifactManif
   const arch = text(manifest.arch, "manifest.arch");
   if (
     manifest.schemaVersion !== 1 ||
-    (platform !== "darwin" && platform !== "linux") ||
+    (platform !== "darwin" && platform !== "linux" && platform !== "win32") ||
     (arch !== "arm64" && arch !== "x64") ||
     !Object.hasOwn(NATIVE_SYSTEM_DEPENDENCIES, `${platform}-${arch}`)
   )
