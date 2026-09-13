@@ -42,6 +42,10 @@ const app = createBackendApp({
     },
   },
 });
+
+// Declared before the scenario runs; a top-level const below the try block is in the
+// temporal dead zone when sampleEncoding executes and throws on every run.
+const sampleText = "semantic index integration sample";
 try {
   app.listen({ hostname: "127.0.0.1", port: 0 });
   assert(app.server, "Integration HTTP server must be listening");
@@ -80,7 +84,6 @@ try {
 }
 
 type Client = ReturnType<typeof createBackendClient>;
-const sampleText = "semantic index integration sample";
 
 /** Observations only; functional acceptance does not assert a machine-specific performance target. */
 async function sampleEncoding(client: Client) {
