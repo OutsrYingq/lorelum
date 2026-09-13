@@ -1,8 +1,14 @@
+import { isAbsolute } from "node:path";
 import { z } from "zod";
 
 import { embeddingErrorCodes } from "../embedding/errors";
 
-const storageRootSchema = z.string().min(1).regex(/^\//);
+// The store root must be explicit and absolute; the separator convention is the host's
+// (mirrors query/model.ts — Windows drive roots are not slash-prefixed).
+const storageRootSchema = z
+  .string()
+  .min(1)
+  .refine(isAbsolute, "storageRoot must be an absolute path");
 const profileIdSchema = z.string().regex(/^[a-f0-9]{64}$/);
 
 export const indexStateSchema = z.enum(["missing", "ready", "stale", "incompatible"]);
