@@ -115,10 +115,16 @@ function Add-LorelumBinToPath([string]$Directory, [System.EnvironmentVariableTar
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 
 function Test-WindowsX64 {
-  [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows) -and
-  ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture -eq [System.Runtime.InteropServices.Architecture]::X64)
+  # [Environment] has resolved in every observed Windows PowerShell session, while sessions
+  # exist where [RuntimeInformation] members misbehave (observed: OSArchitecture yields no
+  # value), which made the previous check reject actual Windows x64 hosts as unsupported.
+  # 64-bit Windows includes ARM64 hosts running the x64 package under emulation.
+  $env:OS -eq 'Windows_NT' -and [Environment]::Is64BitOperatingSystem
 }
-if (-not (Test-WindowsX64)) { Fail 'only Windows x64 is currently supported' }
+if (-not (Test-WindowsX64)) {
+  Fail ("only Windows x64 is currently supported (detected OS={0}, 64-bit OS={1}, 64-bit process={2}, PowerShell {3})" -f
+    $env:OS, [Environment]::Is64BitOperatingSystem, [Environment]::Is64BitProcess, $PSVersionTable.PSVersion)
+}
 
 # System32 bsdtar ships with Windows 10 1809+ and handles both listing and extraction.
 $tar = Join-Path $env:SystemRoot 'System32\tar.exe'
