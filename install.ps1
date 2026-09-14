@@ -63,8 +63,11 @@ function Resolve-PathTarget {
 }
 
 function Broadcast-UserEnvironmentChange {
-  if (-not ('Lorelum.Native.EnvironmentChange' -as [type])) {
-    Add-Type @'
+  # Best-effort notice so running shells refresh their environment; a failure here must
+  # never fail an otherwise-successful install (new terminals read the registry anyway).
+  try {
+    if (-not ('Lorelum.Native.EnvironmentChange' -as [type])) {
+      Add-Type @'
 using System;
 using System.Runtime.InteropServices;
 
@@ -82,17 +85,21 @@ namespace Lorelum.Native {
   }
 }
 '@
+    }
+    # [UIntPtr]0 fails to convert on Windows PowerShell 5.1; Zero is already the right type.
+    [UIntPtr]$result = [UIntPtr]::Zero
+    [void][Lorelum.Native.EnvironmentChange]::SendMessageTimeout(
+      [IntPtr]0xffff,
+      0x001a,
+      [UIntPtr]::Zero,
+      'Environment',
+      0x0002,
+      5000,
+      [ref]$result
+    )
+  } catch {
+    Write-Verbose "environment change broadcast skipped: $($_.Exception.Message)"
   }
-  [UIntPtr]$result = [UIntPtr]0
-  [void][Lorelum.Native.EnvironmentChange]::SendMessageTimeout(
-    [IntPtr]0xffff,
-    0x001a,
-    [UIntPtr]0,
-    'Environment',
-    0x0002,
-    5000,
-    [ref]$result
-  )
 }
 
 function Add-LorelumBinToPath([string]$Directory, [System.EnvironmentVariableTarget]$Target) {
